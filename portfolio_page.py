@@ -16,7 +16,7 @@ REALIZED_PATH = "realized_trades.json"  # 已實現交易紀錄
 
 # ---------- Utils ----------
 def guess_is_etf(symbol: str) -> bool:
-    return symbol.strip().upper().startswith("00")  # why: 台灣 ETF 多為 00xxx
+    return symbol.strip().upper().startswith("00")  # 台灣 ETF 多為 00xxx（簡易判斷）
 
 
 @st.cache_data(ttl=3600)
@@ -37,6 +37,24 @@ def get_latest_price(symbol: str) -> Optional[float]:
         except Exception:
             continue
     return None
+
+
+def fmt4(x: Optional[float]) -> str:
+    try:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return "—"
+        return f"{float(x):,.4f}"
+    except Exception:
+        return "—"
+
+
+def fmtpct2(x: Optional[float]) -> str:
+    try:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return "—"
+        return f"{float(x):.2f}%"
+    except Exception:
+        return "—"
 
 
 # ---------- Storage ----------
@@ -128,10 +146,72 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
         {"date": sell_date.isoformat(), "qty": int(sell_qty), "price": float(sell_price)}
     )
     if pos["qty"] == 0:
-        data.pop(idx)  # why: 全賣出移除空紀錄
+        data.pop(idx)  # 全賣出移除空紀錄
         st.info("此筆持股已全部賣出並移除。")
     _save_portfolio()
     st.success("已更新持股與已實現損益。")
+    st.rerun()
+
+
+def _fifo_sell(symbol: str, sell_qty: int, sell_date: date, sell_price: float) -> None:
+    """跨批次 FIFO 賣出同代碼持股；逐批寫入 realized_trades。"""
+    data = _load_portfolio()
+    lots = [(i, r) for i, r in enumerate(data) if str(r.get("symbol")).strip().upper() == symbol.strip().upper()]
+    if not lots:
+        st.warning("找不到該代碼的持股。"); return
+    if sell_qty <= 0:
+        st.warning("賣出數量需大於 0。"); return
+    if sell_price <= 0:
+        st.warning("請輸入正確的賣出價格。"); return
+
+    # 依買入日升冪（FIFO）；沒有日期的排最後
+    def _key(t):
+        d = t[1].get("buy_date") or ""
+        try:
+            return (pd.to_datetime(d), t[0])
+        except Exception:
+            return (pd.Timestamp.max, t[0])
+
+    lots.sort(key=_key)
+
+    remaining = sell_qty
+    for idx, lot in lots:
+        if remaining <= 0:
+            break
+        lot_qty = int(lot.get("qty", 0))
+        if lot_qty <= 0:
+            continue
+        take = min(remaining, lot_qty)
+        cost = float(lot.get("cost", 0.0))
+        pnl = (sell_price - cost) * take
+        _append_realized(
+            {
+                "symbol": lot.get("symbol"),
+                "sell_date": sell_date.isoformat(),
+                "qty": int(take),
+                "sell_price": float(sell_price),
+                "buy_cost": cost,
+                "pnl": pnl,
+                "buy_date": lot.get("buy_date", None),
+            }
+        )
+        lot["qty"] = lot_qty - take
+        lot.setdefault("sell_logs", []).append(
+            {"date": sell_date.isoformat(), "qty": int(take), "price": float(sell_price), "mode": "FIFO"}
+        )
+        remaining -= take
+
+    # 刪除 qty==0 的批次
+    st.session_state.portfolio = [r for r in data if int(r.get("qty", 0)) > 0]
+    _save_portfolio()
+
+    sold = sell_qty - max(remaining, 0)
+    if sold <= 0:
+        st.warning("沒有可賣出的數量。"); return
+    if remaining > 0:
+        st.info(f"持股不足，已依 FIFO 賣出 {sold} 股。")
+    else:
+        st.success(f"已依 FIFO 完成賣出 {sold} 股。")
     st.rerun()
 
 
@@ -149,33 +229,43 @@ def _show_confirm_ui() -> None:
     if not info:
         return
     act = info.get("type"); idx = info.get("idx", -1)
+
     if act == "delete":
-        title = "確認刪除"; msg = f"確定要 **刪除** 第 {idx + 1} 筆持股嗎？此動作無法復原。"
+        title = "確認刪除"
+        msg = f"確定要 **刪除** 第 {idx + 1} 筆持股嗎？此動作無法復原。"
     elif act == "sell":
         title = "確認賣出"
         msg = f"確定要於 **{info.get('sell_date')}** 以 **{info.get('sell_price'):.4f}** 價格賣出 **{info.get('sell_qty')} 股**（第 {idx + 1} 筆）嗎？"
+    elif act == "sell_fifo":
+        title = "確認 FIFO 賣出"
+        msg = (
+            f"確定要於 **{info.get('sell_date')}** 以 **{info.get('sell_price'):.4f}** "
+            f"價格賣出 **{info.get('sell_qty')} 股**（代碼：{info.get('symbol')}，依 FIFO 跨批次）嗎？"
+        )
     else:
         _clear_confirm(); return
 
     def _on_confirm() -> None:
         if act == "delete":
             _clear_confirm(); _delete_position(idx)
-        else:
+        elif act == "sell":
             _clear_confirm(); _sell_position(idx, int(info["sell_qty"]), info["sell_date"], float(info["sell_price"]))
+        else:
+            _clear_confirm(); _fifo_sell(info["symbol"], int(info["sell_qty"]), info["sell_date"], float(info["sell_price"]))
 
     if hasattr(st, "dialog"):
         @st.dialog(title)
         def _dlg() -> None:
             st.write(msg)
             c1, c2 = st.columns(2)
-            if c1.button("確認", type="primary", key="confirm_ok"): _on_confirm()
-            if c2.button("取消", key="confirm_cancel"): _clear_confirm(); st.rerun()
+            if c1.button("確認", type="primary"): _on_confirm()
+            if c2.button("取消"): _clear_confirm(); st.rerun()
         _dlg()
     else:
         st.warning(f"**{title}**｜{msg}")
         c1, c2 = st.columns(2)
-        if c1.button("確認", type="primary", key="fallback_ok"): _on_confirm()
-        if c2.button("取消", key="fallback_cancel"): _clear_confirm(); st.rerun()
+        if c1.button("確認", type="primary"): _on_confirm()
+        if c2.button("取消"): _clear_confirm(); st.rerun()
 
 
 # ---------- Page ----------
@@ -211,7 +301,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         st.metric("已實現損益", f"{total_realized:,.4f}")
         return
 
-    # 構建 DataFrame（保持數值型 → Styler 可套色與格式）
+    # 主表（數值型 → Styler 套色與格式）
     rows: List[Dict[str, Any]] = []
     principal = 0.0
     total_value = 0.0
@@ -241,7 +331,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         total_value += value
 
     df = pd.DataFrame(rows)
-    # 日期排序
     try:
         df["_d"] = pd.to_datetime(df["買入日"], errors="coerce")
         df.sort_values(by=["_d", "代碼"], ascending=[True, True], inplace=True)
@@ -249,14 +338,12 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     except Exception:
         pass
 
-    # 正綠負紅（未實現損益、回報率）
     def _pos_neg_color(v: Any) -> str:
         if isinstance(v, (int, float)) and pd.notna(v):
-            if v > 0: return "color:green;"
-            if v < 0: return "color:red;"
+            if v > 0: return "color:red;"
+            if v < 0: return "color:green;"
         return ""
 
-    # 格式：數字4位、百分比2位；缺值顯示 —
     styled = (
         df.style
         .format(
@@ -297,10 +384,9 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     with c2:
         st.metric("總未實現損益", f"{pnl_unrealized:,.4f}", delta=f"{total_return_rate:.2f}%",
                   delta_color=("inverse" if pnl_unrealized < 0 else "normal"))
-        # >>> 新增「已實現損益」：保留你的版面配置，其餘不變
         st.caption(f"已實現損益：{total_realized:,.4f}")
 
-    # 管理持股（獨立面板，避免誤觸）
+    # 管理持股（單筆 / FIFO）
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
         options = [f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}" for i, r in enumerate(data)]
         sel_idx = st.selectbox("選擇要操作的持股", options=range(len(options)), format_func=lambda i: options[i], key="mgmt_sel")
@@ -316,9 +402,33 @@ def show(prefill_symbol: Optional[str] = None) -> None:
             sell_qty_val = st.number_input("賣出數量", min_value=1, max_value=max(cur_qty, 1),
                                            value=min(100, max(cur_qty, 1)), step=1, key="sell_qty_global")
         with c3:
-            sell_price_val = st.number_input("賣出價格", min_value=0.0, value=0.0, step=0.0001, key="sell_price_global")
+            sell_price_val = st.number_input(
+                "賣出價格", min_value=0.0, value=0.0, step=0.0001, key="sell_price_global"
+            )
             if st.button("賣出", key="btn_sell", type="primary"):
-                _open_confirm({"type": "sell", "idx": sel_idx, "sell_qty": int(sell_qty_val),
-                               "sell_date": sell_date_val, "sell_price": float(sell_price_val)})
+                _open_confirm(
+                    {"type": "sell", "idx": sel_idx, "sell_qty": int(sell_qty_val),
+                     "sell_date": sell_date_val, "sell_price": float(sell_price_val)}
+                )
+
+        # --- FIFO 賣出（依代碼跨批次） ---
+        st.divider()
+        st.subheader("FIFO 賣出（依代碼跨批次）", anchor=False)
+        symbols = sorted({str(r.get("symbol")) for r in data})
+        fifo_symbol = st.selectbox("選擇代碼", options=symbols, key="fifo_sym")
+        fifo_date = st.date_input("賣出日（FIFO）", value=date.today(), key="fifo_date")
+        fifo_available = sum(int(r.get("qty", 0)) for r in data if str(r.get("symbol")) == fifo_symbol)
+        c4, c5 = st.columns(2)
+        with c4:
+            fifo_price = st.number_input("賣出價格（FIFO）", min_value=0.0, value=0.0, step=0.0001, key="fifo_price")
+        with c5:
+            fifo_qty = st.number_input("賣出數量（FIFO）", min_value=1, max_value=max(fifo_available, 1),
+                                       value=min(100, max(fifo_available, 1)), step=1, key="fifo_qty")
+        st.caption(f"可用數量：{fifo_available:,}")
+        if st.button("依 FIFO 賣出", type="primary", key="btn_fifo_sell"):
+            _open_confirm(
+                {"type": "sell_fifo", "symbol": fifo_symbol, "sell_qty": int(fifo_qty),
+                 "sell_date": fifo_date, "sell_price": float(fifo_price)}
+            )
 
     _show_confirm_ui()
