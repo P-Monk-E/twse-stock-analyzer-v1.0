@@ -36,19 +36,11 @@ def get_latest_price(symbol: str) -> Optional[float]:
             continue
     return None
 
-def fmt4(x: Optional[float]) -> str:
+def _fmt4(x: Optional[float]) -> str:
     try:
         if x is None or (isinstance(x, float) and pd.isna(x)):
             return "—"
-        return f"{float(x):,.4f}"
-    except Exception:
-        return "—"
-
-def fmtpct2(x: Optional[float]) -> str:
-    try:
-        if x is None or (isinstance(x, float) and pd.isna(x)):
-            return "—"
-        return f"{float(x):.2f}%"
+        return f"{float(x):.4f}"
     except Exception:
         return "—"
 
@@ -141,7 +133,7 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
         {"date": sell_date.isoformat(), "qty": int(sell_qty), "price": float(sell_price)}
     )
     if pos["qty"] == 0:
-        data.pop(idx)  # 全賣出移除空紀錄
+        data.pop(idx)
         st.info("此筆持股已全部賣出並移除。")
     _save_portfolio()
     st.success("已更新持股與已實現損益。")
@@ -158,7 +150,6 @@ def _fifo_sell(symbol: str, sell_qty: int, sell_date: date, sell_price: float) -
     if sell_price <= 0:
         st.warning("請輸入正確的賣出價格。"); return
 
-    # 依買入日升冪（FIFO）；沒有日期的排最後
     def _key(t):
         d = t[1].get("buy_date") or ""
         try:
@@ -195,7 +186,6 @@ def _fifo_sell(symbol: str, sell_qty: int, sell_date: date, sell_price: float) -
         )
         remaining -= take
 
-    # 刪除 qty==0 的批次
     st.session_state.portfolio = [r for r in data if int(r.get("qty", 0)) > 0]
     _save_portfolio()
 
@@ -218,14 +208,58 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     # 風險偵測（估算組合 Sharpe/Treynor）
     with st.expander("風險偵測（近一年估算）", expanded=False):
         st.caption("說明：依最近收盤價權重合成組合報酬，市場以加權指數 ^TWII，rf=1%。")
+
+        # 可調門檻（存放於 session_state）
+        ns_default = float(st.session_state.get("non_sys_thr", 0.5))
+        s_default = float(st.session_state.get("sys_thr", 0.5))
+        c1, c2 = st.columns(2)
+        with c1:
+            non_sys_thr = st.slider(
+                "非系統性門檻：Treynor − Sharpe >",
+                min_value=0.1, max_value=2.0, step=0.1, value=ns_default, help="越大越嚴格；預設 0.5"
+            )
+        with c2:
+            sys_thr = st.slider(
+                "系統性門檻：Treynor − Sharpe < −",
+                min_value=0.1, max_value=2.0, step=0.1, value=s_default, help="越大越嚴格；預設 0.5"
+            )
+        st.session_state["non_sys_thr"] = float(non_sys_thr)
+        st.session_state["sys_thr"] = float(sys_thr)
+
         if st.button("估算並產生風險警告", type="primary"):
             sharpe, treynor = estimate_portfolio_risk(data)
-            set_portfolio_risk_warning(sharpe, treynor)
-            msg = diversification_warning(sharpe, treynor)
+
+            # 顯示 4 位小數的即時數值與 diff
+            diff = None if (sharpe is None or treynor is None) else (treynor - sharpe)
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Sharpe", _fmt4(sharpe))
+            col_b.metric("Treynor", _fmt4(treynor))
+            col_c.metric("Diff (T−S)", _fmt4(diff))
+
+            # 寫入並提示
+            set_portfolio_risk_warning(sharpe, treynor, non_sys_thr=non_sys_thr, sys_thr=sys_thr)
+            msg = diversification_warning(sharpe, treynor, non_sys_thr=non_sys_thr, sys_thr=sys_thr)
             if msg:
                 st.warning(msg)
             else:
                 st.success("✅ 估算完成，未偵測到明顯分散/系統性風險失衡。")
+
+    # ======== 以下為既有庫存管理 ========
+    def fmt4(x: Optional[float]) -> str:
+        try:
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return "—"
+            return f"{float(x):,.4f}"
+        except Exception:
+            return "—"
+
+    def fmtpct2(x: Optional[float]) -> str:
+        try:
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return "—"
+            return f"{float(x):.2f}%"
+        except Exception:
+            return "—"
 
     # 新增持股
     with st.expander("新增持股", expanded=True):
@@ -252,7 +286,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         st.metric("已實現損益", f"{total_realized:,.4f}")
         return
 
-    # 主表
     rows: List[Dict[str, Any]] = []
     principal = 0.0
     total_value = 0.0
@@ -289,7 +322,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     except Exception:
         pass
 
-    # 正綠負紅
     def _pos_neg_color(v: Any) -> str:
         if isinstance(v, (int, float)) and pd.notna(v):
             if v > 0:
@@ -316,7 +348,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     )
     st.dataframe(styled, use_container_width=True)
 
-    # 連結清單（可點）
     st.caption("快速前往：")
     link_df = pd.DataFrame(links)
     st.data_editor(
@@ -327,7 +358,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         hide_index=True,
     )
 
-    # 資產配置（市值占比）
     st.subheader("資產配置（市值占比）", anchor=False)
     alloc = (
         df[["代碼", "市值"]]
@@ -347,7 +377,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     else:
         st.info("目前無可用的市值資料。")
 
-    # 總計
     pnl_unrealized = total_value - principal
     total_return_rate = (pnl_unrealized / principal * 100.0) if principal > 0 else 0.0
 
@@ -358,9 +387,8 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     with c2:
         st.metric("總未實現損益", f"{pnl_unrealized:,.4f}", delta=f"{total_return_rate:.2f}%",
                   delta_color=("inverse" if pnl_unrealized < 0 else "normal"))
-        st.caption(f"已實現損益：{total_realized:,.4f}")
+        st.caption(f"已實現損益：{sum(float(x.get('pnl', 0.0)) for x in _load_realized()):,.4f}")
 
-    # 管理持股
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
         options = [f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}" for i, r in enumerate(data)]
         sel_idx = st.selectbox("選擇要操作的持股", options=range(len(options)), format_func=lambda i: options[i], key="mgmt_sel")
@@ -386,7 +414,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                     "sell_price": float(sell_price_val),
                 }
 
-        # FIFO 賣出
         st.divider()
         st.subheader("FIFO 賣出（依代碼跨批次）", anchor=False)
         symbols = sorted({str(r.get("symbol")) for r in data})
@@ -409,7 +436,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                 "sell_price": float(fifo_price),
             }
 
-    # 彈窗互動（簡化處理）
     info = st.session_state.get("confirm")
     if info:
         act = info.get("type"); idx = info.get("idx", -1)
