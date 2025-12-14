@@ -1,3 +1,4 @@
+# /mnt/data/stock_utils.py
 import yfinance as yf
 import numpy as np
 import pandas as pd
@@ -9,7 +10,7 @@ TICKER_NAME_MAP = {
     "2454": "聯發科",
     "2303": "聯電",
     "2618": "長榮航",
-    "1737": "真新",
+    "1737": "臺鹽",
     "0050": "元大台灣50",
     "0056": "元大高股息",
     "006208": "富邦科技",
@@ -22,10 +23,11 @@ def is_etf(code):
     return code in ETF_LIST
 
 def find_ticker_by_name(input_str):
+    s = str(input_str).upper()
     for t, name in TICKER_NAME_MAP.items():
-        if input_str in name:
+        if s in name or s == t:
             return t
-    return input_str
+    return s  # 保留原本回傳輸入的行為
 
 def fetch_price_data(code, start, end):
     try:
@@ -43,20 +45,29 @@ def calc_beta(prices_asset, prices_market):
     if len(am) < 12:
         return np.nan
     X = sm.add_constant(mm)
-    return float(sm.OLS(am, X).fit().params["market"])
+    return float(sm.OLS(am, X).fit().params.get("market", np.nan))
 
 def calc_alpha(prices_asset, prices_market, rf):
     df = pd.concat([prices_asset, prices_market], axis=1).dropna()
+    if df.empty:
+        return np.nan
     ar = df.iloc[:, 0].pct_change().dropna()
     mr = df.iloc[:, 1].pct_change().dropna()
+    if len(ar) == 0 or len(mr) == 0:
+        return np.nan
     excess_a = ar - rf / 252
     excess_m = mr - rf / 252
     X = sm.add_constant(excess_m)
-    return float(sm.OLS(excess_a, X).fit().params["const"]) * 252
+    try:
+        return float(sm.OLS(excess_a, X).fit().params.get("const", np.nan)) * 252
+    except Exception:
+        return np.nan
 
 def calc_sharpe(prices, rf):
     r = prices.pct_change().dropna()
-    return ((r - rf / 252).mean() / r.std()) * np.sqrt(252) if r.std() != 0 else np.nan
+    if r.std() == 0 or len(r) == 0:
+        return np.nan
+    return ((r - rf / 252).mean() / r.std()) * np.sqrt(252)
 
 def get_metrics(code, market_close, rf, start, end, is_etf=False):
     df = fetch_price_data(code, start, end)
