@@ -249,11 +249,11 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     except Exception:
         pass
 
-    # 正紅負綠（未實現損益、回報率）
+    # 正綠負紅（未實現損益、回報率）
     def _pos_neg_color(v: Any) -> str:
         if isinstance(v, (int, float)) and pd.notna(v):
-            if v > 0: return "color:red;"
-            if v < 0: return "color:green;"
+            if v > 0: return "color:green;"
+            if v < 0: return "color:red;"
         return ""
 
     # 格式：數字4位、百分比2位；缺值顯示 —
@@ -297,10 +297,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     with c2:
         st.metric("總未實現損益", f"{pnl_unrealized:,.4f}", delta=f"{total_return_rate:.2f}%",
                   delta_color=("inverse" if pnl_unrealized < 0 else "normal"))
-        # why: st.metric 本身數字顏色不可改，用額外 markdown 補「正紅負綠」
-        color = "red" if pnl_unrealized > 0 else ("green" if pnl_unrealized < 0 else "inherit")
-        st.markdown(f"<span style='color:{color};'>（未實現損益顏色指示）</span>", unsafe_allow_html=True)
-        st.caption(f"已實現損益：{total_realized:,.4f}")
 
     # 管理持股（獨立面板，避免誤觸）
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
