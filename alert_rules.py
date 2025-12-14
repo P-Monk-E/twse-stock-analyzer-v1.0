@@ -1,7 +1,7 @@
-# /mnt/data/alert_rules.py
 import random
 
 def stock_pass(stock):
+    # 門檻與頁面一致；若後續你要調整，只改這裡與 grading 即可
     return (stock["流動比率"] >= 1.25 and stock["ROE"] >= 0.08 and 
             stock["Alpha"] > 0 and stock["Sharpe Ratio"] >= 1)
 
