@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 from risk_grading import grade_sharpe, grade_treynor, summarize
+from portfolio_risk_utils import diversification_warning
 
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
 from chart_utils import plot_candlestick_with_ma
@@ -36,7 +37,7 @@ def show(prefill_symbol: str | None = None) -> None:
     st.header("📊 ETF 專區")
 
     default_symbol = st.query_params.get("symbol", prefill_symbol or "")
-    st.text_input("輸入 ETF 名稱或代碼（例：0050 / 0056 / 006208）",
+    st.text_input("輸入 ETF 名稱或代碼（例：0050 / 0056 / 006208 / 00980A）",
                   value=default_symbol, key="etf_symbol", on_change=_sync_symbol_from_input)
     user_input = (st.session_state.get("etf_symbol") or "").strip()
     if not user_input:
@@ -45,6 +46,7 @@ def show(prefill_symbol: str | None = None) -> None:
 
     try:
         ticker = find_ticker_by_name(user_input)
+        # 使用強化版 is_etf，00980A 會被正確識別
         if not is_etf(ticker):
             st.warning("偵測到輸入為個股，請切換至「股票」頁面查詢。")
             return
@@ -77,16 +79,25 @@ def show(prefill_symbol: str | None = None) -> None:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
 
-        # ======= 單一摘要 =======
+        # ======= 精簡摘要 =======
         grades = {"Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
                   "Treynor": grade_treynor(stats.get("Treynor"))}
         crit, warn, _ = summarize(grades)
         if crit:
-            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 指標未達標，請審慎評估。")
+            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
         elif warn:
             st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
         else:
-            st.success("✅ 主要指標健康。")
+            st.success("✅ 指標狀態良好。")
+
+        # ======= （新增）ETF 專屬系統/非系統性風險提示 =======
+        sharpe = stats.get("Sharpe Ratio")
+        treynor = stats.get("Treynor")
+        non_sys_thr = float(st.session_state.get("non_sys_thr", 0.5))
+        sys_thr = float(st.session_state.get("sys_thr", 0.5))
+        msg = diversification_warning(sharpe, treynor, non_sys_thr=non_sys_thr, sys_thr=sys_thr)
+        if msg:
+            st.warning(msg)
 
         # ======= 圖表 + 波動提示 =======
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
