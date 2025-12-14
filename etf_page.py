@@ -1,5 +1,5 @@
 import streamlit as st
-from stock_utils import get_metrics, find_ticker_by_name, is_etf
+from stock_utils import get_metrics, find_ticker_by_name
 from chart_utils import plot_candlestick_with_ma
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -7,18 +7,15 @@ from datetime import datetime, timedelta
 def show():
     st.header("📊 ETF 專區")
 
-    user_input = st.text_input("輸入 ETF 名稱或代碼", "")
+    query_params = st.experimental_get_query_params()
+    symbol = query_params.get("symbol", [None])[0]
+
+    user_input = st.text_input("輸入 ETF 名稱或代碼", symbol or "").strip().upper()
     if not user_input:
         st.info("請輸入 ETF 名稱或代碼以查詢。")
         return
 
-    ticker = find_ticker_by_name(user_input.strip().upper())
-
-    # ➤ 若不是 ETF，就不允許在 ETF 區查詢
-    if not is_etf(ticker):
-        st.error("⚠️ 這不是 ETF，請改至『股票專區』查詢。")
-        return
-
+    ticker = find_ticker_by_name(user_input)
     end = datetime.today()
     start = end - timedelta(days=365 * 3)
     rf = 0.01
@@ -30,10 +27,9 @@ def show():
         return "✅" if (val >= thr if greater else val <= thr) else "❗"
 
     try:
-        stats = get_metrics(ticker, mkt, rf, start, end, is_etf=True)
+        stats = get_metrics(ticker, mkt, rf, start, end)
         if stats:
             st.write(f"📊 {stats['name']} ({ticker})")
-
             st.dataframe({
                 "Alpha": [f"{stats['Alpha']} {tag(stats['Alpha'],0)}"],
                 "Sharpe Ratio": [f"{stats['Sharpe Ratio']} {tag(stats['Sharpe Ratio'],1)}"],
