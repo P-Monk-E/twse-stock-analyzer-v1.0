@@ -3,12 +3,10 @@ import yfinance as yf
 import json
 import os
 from datetime import date
+from stock_utils import TICKER_NAME_MAP
 
 SAVE_PATH = "portfolio.json"
 
-# -----------------
-# 抓最新收盤價
-# -----------------
 @st.cache_data(ttl=3600)
 def get_latest_price(symbol: str):
     symbol = symbol.upper().strip()
@@ -25,9 +23,6 @@ def get_latest_price(symbol: str):
             continue
     return None
 
-# -----------------
-# 存檔 / 載入
-# -----------------
 def save_portfolio():
     with open(SAVE_PATH, "w", encoding="utf-8") as f:
         json.dump(st.session_state.portfolio, f, ensure_ascii=False, indent=2)
@@ -40,9 +35,6 @@ def load_portfolio():
         except Exception:
             st.session_state.portfolio = []
 
-# -----------------
-# 主頁 show()
-# -----------------
 def show():
     st.header("📦 庫存")
 
@@ -72,11 +64,11 @@ def show():
                 st.session_state.portfolio.append({
                     "ticker": ticker,
                     "shares": shares,
-                    "cost": round(cost,2),
-                    "price": round(price,2),
-                    "capital": round(capital,2),
-                    "value": round(value,2),
-                    "return": round(rtn,2),
+                    "cost": round(cost, 2),
+                    "price": round(price, 2),
+                    "capital": round(capital, 2),
+                    "value": round(value, 2),
+                    "return": round(rtn, 2),
                     "buy_date": buy_date.strftime("%Y-%m-%d"),
                     "realized_profit": 0.0
                 })
@@ -98,26 +90,32 @@ def show():
     total_realized = 0
 
     for idx, stock in enumerate(st.session_state.portfolio):
-        # 計算總值與損益
         total_value += stock["value"]
         total_capital += stock["capital"]
         unrealized = stock["value"] - stock["capital"]
         total_unrealized += unrealized
         total_realized += stock.get("realized_profit", 0.0)
 
-        col1, col2 = st.columns([6,1])
+        col1, col2 = st.columns([6, 1])
         with col1:
             warn = " ⚠️" if stock["return"] < 0 else ""
+            stock_name = TICKER_NAME_MAP.get(stock["ticker"], "")
             st.markdown(
-                f"**{stock['ticker']}**｜現價 {stock['price']}｜市值 {stock['value']}｜報酬率 {stock['return']}%{warn}"
+                f"**{stock['ticker']}** {stock_name}｜"
+                f"現價 {stock['price']}｜"
+                f"股數 {stock['shares']}｜"
+                f"市值 {stock['value']}｜"
+                f"報酬率 {stock['return']}%{warn}"
             )
-            st.caption(f"購買日：{stock['buy_date']}｜未實現損益：{round(unrealized, 2)} 元")
+            st.caption(
+                f"購買日：{stock['buy_date']}｜"
+                f"買入金額：{stock['capital']} 元｜"
+                f"未實現損益：{round(unrealized, 2)} 元"
+            )
 
-            # 售出按鈕
             if st.button("💰 售出", key=f"sell_btn_{idx}"):
                 st.session_state[f"show_sell_{idx}"] = not st.session_state.get(f"show_sell_{idx}", False)
 
-            # 售出表單
             if st.session_state.get(f"show_sell_{idx}", False):
                 sell_qty = st.number_input("賣出股數", 1, stock["shares"], value=1, key=f"qty_{idx}")
                 sell_price = st.number_input("賣出價格", min_value=0.0, step=0.01, format="%.2f", key=f"price_{idx}")
@@ -138,7 +136,6 @@ def show():
                     }
                     st.rerun()
 
-            # 再次確認區塊
             if st.session_state.get("pending_sale") and st.session_state["pending_sale"]["idx"] == idx:
                 ps = st.session_state["pending_sale"]
                 st.warning(
@@ -152,19 +149,16 @@ def show():
                         st.rerun()
                 with col_b:
                     if st.button("✅ 最終確認", key=f"final_{idx}"):
-                        # 執行售出（10秒後完成）
                         st.session_state["finalizing"] = ps
                         del st.session_state["pending_sale"]
                         st.rerun()
 
-        # 刪除按鈕
         with col2:
             if st.button("🗑️", key=f"del_{idx}"):
                 st.session_state.portfolio.pop(idx)
                 save_portfolio()
                 st.rerun()
 
-    # 處理最終確認執行售出 10 秒後
     if "finalizing" in st.session_state:
         ps = st.session_state["finalizing"]
         with st.spinner("⏳ 正在執行售出，10 秒後完成…"):
@@ -175,11 +169,11 @@ def show():
         if idx < len(st.session_state.portfolio):
             stock = st.session_state.portfolio[idx]
             stock["shares"] -= ps["qty"]
-            stock["capital"] = round(stock["shares"] * stock["cost"],2)
-            stock["value"] = round(stock["shares"] * stock["price"],2)
+            stock["capital"] = round(stock["shares"] * stock["cost"], 2)
+            stock["value"] = round(stock["shares"] * stock["price"], 2)
             stock["return"] = round(((stock["value"] - stock["capital"]) / stock["capital"] * 100)
-                                    if stock["capital"] > 0 else 0,2)
-            stock["realized_profit"] += round(ps["realized"],2)
+                                    if stock["capital"] > 0 else 0, 2)
+            stock["realized_profit"] += round(ps["realized"], 2)
             if stock["shares"] == 0:
                 st.session_state.portfolio.pop(idx)
 
