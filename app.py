@@ -1,3 +1,4 @@
+# /mount/src/twse-stock-analyzer-v1.0/app.py
 from __future__ import annotations
 
 import streamlit as st
@@ -9,16 +10,17 @@ PAGES = ["股票", "ETF", "庫存"]
 
 def main() -> None:
     st.sidebar.header("主選單")
-    nav = st.sidebar.radio("選擇頁面", PAGES, index=0, key="nav_page")
+    nav_param = st.query_params.get("nav")
+    default_index = PAGES.index(nav_param) if nav_param in PAGES else 0
 
-    # why: 返回同頁時預填
+    nav = st.sidebar.radio("選擇頁面", PAGES, index=default_index, key="nav_page")
     q_symbol = st.query_params.get("symbol")
 
     if nav == "股票":
         stocks_page.show(prefill_symbol=q_symbol)
     elif nav == "ETF":
         etf_page.show(prefill_symbol=q_symbol)
-    elif nav == "庫存":
+    else:
         portfolio_page.show(prefill_symbol=q_symbol)
 
 if __name__ == "__main__":
