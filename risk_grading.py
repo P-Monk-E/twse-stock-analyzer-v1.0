@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Dict, Tuple
 
 # 回傳 (符號, 說明)
 def grade_sharpe(x: float) -> Tuple[str, str]:
@@ -46,8 +46,12 @@ def grade_roe(x: float) -> Tuple[str, str]:
         return "⚠", "普通"
     return "❗", "表現不佳"
 
-def has_any_critical(grades: dict) -> bool:
-    """
-    grades = {"Sharpe": ("❗","..."), ...}
-    """
+def has_any_critical(grades: Dict[str, Tuple[str, str]]) -> bool:
     return any(v[0] == "❗" for v in grades.values())
+
+def summarize(grades: Dict[str, Tuple[str, str]]) -> Tuple[list, list, list]:
+    """回傳 (criticals, warnings, goods) 的鍵名列表"""
+    crit = [k for k, (icon, _) in grades.items() if icon == "❗"]
+    warn = [k for k, (icon, _) in grades.items() if icon == "⚠"]
+    good = [k for k, (icon, _) in grades.items() if icon == "✅"]
+    return crit, warn, good
