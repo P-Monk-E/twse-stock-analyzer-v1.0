@@ -15,7 +15,7 @@ TICKER_NAME_MAP = {
     "006208": "富邦科技",
 }
 
-# ETF 清單（防止股票誤查）
+# ETF 清單
 ETF_LIST = {"0050", "0056", "006208"}
 
 def is_etf(code):
@@ -30,7 +30,7 @@ def find_ticker_by_name(input_str):
 def fetch_price_data(code, start, end):
     try:
         return yf.Ticker(f"{code}.TW").history(start=start, end=end)
-    except Exception:
+    except:
         return None
 
 def calc_beta(prices_asset, prices_market):
@@ -74,7 +74,7 @@ def get_metrics(code, market_close, rf, start, end, is_etf=False):
     else:
         try:
             info = yf.Ticker(f"{code}.TW").info
-        except Exception:
+        except:
             info = {}
 
         total_liab = info.get("totalLiab", np.nan)
