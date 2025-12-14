@@ -1,4 +1,4 @@
-# /mnt/data/app.py
+# /mnt/data/app.py  （無變動，附上以便對照/覆蓋）
 import streamlit as st
 
 import stocks_page
