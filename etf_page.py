@@ -1,5 +1,5 @@
 import streamlit as st
-from stock_utils import get_metrics, find_ticker_by_name
+from stock_utils import get_metrics, find_ticker_by_name, is_etf
 from chart_utils import plot_candlestick_with_ma
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -13,6 +13,12 @@ def show():
         return
 
     ticker = find_ticker_by_name(user_input.strip().upper())
+
+    # ➤ 若不是 ETF，就不允許在 ETF 區查詢
+    if not is_etf(ticker):
+        st.error("⚠️ 這不是 ETF，請改至『股票專區』查詢。")
+        return
+
     end = datetime.today()
     start = end - timedelta(days=365 * 3)
     rf = 0.01
@@ -41,5 +47,4 @@ def show():
         else:
             st.warning("查無 ETF 資料或資料不足。")
     except Exception as e:
-
         st.error(f"❌ 查詢 ETF 失敗：{e}")
