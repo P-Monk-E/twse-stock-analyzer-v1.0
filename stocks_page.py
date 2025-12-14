@@ -69,7 +69,7 @@ def show(prefill_symbol: str | None = None) -> None:
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
         st.subheader(f"{name or ticker}（{ticker}）")
 
-        # ======= Top KPI：四欄（Treynor 在 Sharpe 右邊）=======
+        # === KPI（Treynor 在 Sharpe 右邊）===
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
@@ -84,23 +84,23 @@ def show(prefill_symbol: str | None = None) -> None:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
 
-        # ======= 風險摘要（單一盒子，收斂所有警示）=======
+        # === 精簡風險摘要：不顯示系統性/非系統性詞彙 ===
         grades = {}
         grades["Sharpe"] = grade_sharpe(stats.get("Sharpe Ratio"))
         grades["Treynor"] = grade_treynor(stats.get("Treynor"))
-        v_de = stats.get("負債權益比");    grades["負債權益比"] = grade_debt_equity(v_de if pd.notna(v_de) else None)
-        v_cr = stats.get("流動比率");      grades["流動比率"]   = grade_current_ratio(v_cr if pd.notna(v_cr) else None)
-        v_roe = stats.get("ROE");         grades["ROE"]        = grade_roe(v_roe if pd.notna(v_roe) else None)
+        v_de = stats.get("負債權益比"); grades["負債權益比"] = grade_debt_equity(v_de if pd.notna(v_de) else None)
+        v_cr = stats.get("流動比率");   grades["流動比率"]   = grade_current_ratio(v_cr if pd.notna(v_cr) else None)
+        v_roe = stats.get("ROE");      grades["ROE"]        = grade_roe(v_roe if pd.notna(v_roe) else None)
 
         crit, warn, good = summarize(grades)
         if crit:
-            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 指標未達標，請審慎評估。")
+            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
         elif warn:
             st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
         else:
-            st.success("✅ 主要指標健康。")
+            st.success("✅ 指標狀態良好。")
 
-        # ======= 財務比率：一行精簡列示 =======
+        # === 財務比率：單行精簡 ===
         def _icon(name: str) -> str:
             return grades[name][0]
         roe_txt = f"{(v_roe*100):.2f}%" if (v_roe is not None and pd.notna(v_roe)) else "—"
@@ -111,7 +111,7 @@ def show(prefill_symbol: str | None = None) -> None:
         )
         st.markdown(line)
 
-        # ======= 圖表 + 波動提示 =======
+        # === 圖表 ===
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
         madr = stats.get("MADR")
