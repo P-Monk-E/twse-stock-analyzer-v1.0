@@ -214,7 +214,7 @@ def show(prefill_symbol: str | None = None) -> None:
         st.metric("已實現損益", f"{total_realized:,.4f}")
         return
 
-    # ---- 表格資料（保持數值型，缺值=NaN）----
+    # ---- 表格資料（保持數值，格式化階段再加千分位/百分比）----
     rows = []; principal = 0.0; total_value = 0.0
     for row in data:
         sym = row.get("symbol")
@@ -231,10 +231,10 @@ def show(prefill_symbol: str | None = None) -> None:
                 "代碼": sym,
                 "股數": qty,
                 "成本/股": cost,
-                "現價": price,          # 可能是 NaN
+                "現價": price,
                 "市值": value,
                 "未實現損益": unreal,
-                "回報率%": rate_pct,     # 純數字，格式化時再加 %
+                "回報率%": rate_pct,
             }
         )
         principal += cost * qty
@@ -255,18 +255,18 @@ def show(prefill_symbol: str | None = None) -> None:
             if v < 0: return "color:green;"
         return ""
 
-    # 指定格式（4 位；百分比 2 位），缺值顯示 "—"
+    # 指定格式（金額/數量4位+千分位，百分比2位）
     try:
         styled = (
             df.style
             .format(
                 {
-                    "股數": "{:.4f}",
-                    "成本/股": "{:.4f}",
-                    "現價": "{:.4f}",
-                    "市值": "{:.4f}",
-                    "未實現損益": "{:.4f}",
-                    "回報率%": "{:.2f}",
+                    "股數": "{:,.4f}",
+                    "成本/股": "{:,.4f}",
+                    "現價": "{:,.4f}",
+                    "市值": "{:,.4f}",
+                    "未實現損益": "{:,.4f}",
+                    "回報率%": "{:.2f}%",  # 僅顯示百分比符號與兩位小數
                 },
                 na_rep="—",
             )
@@ -277,7 +277,7 @@ def show(prefill_symbol: str | None = None) -> None:
     except Exception:
         st.dataframe(df, use_container_width=True)
 
-    # ---- 總計（4 位；% 2 位）----
+    # ---- 總計（4位 / 2位%）----
     pnl_unrealized = total_value - principal
     total_return_rate = (pnl_unrealized / principal * 100.0) if principal > 0 else 0.0
 
@@ -294,13 +294,13 @@ def show(prefill_symbol: str | None = None) -> None:
         )
         st.caption(f"已實現損益：{total_realized:,.4f}")
 
-    # ---- 管理持股（刪除 / 賣出；集中於面板）----
+    # ---- 管理持股（刪除 / 賣出）----
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
         options = [f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}" for i, r in enumerate(data)]
         sel_idx = st.selectbox("選擇要操作的持股", options=range(len(options)), format_func=lambda i: options[i], key="mgmt_sel")
 
         cur = data[sel_idx]; cur_qty = int(cur.get("qty", 0))
-        st.caption(f"目前選擇：{cur.get('symbol')}｜買入日 {cur.get('buy_date','—')}｜可用股數 {cur_qty}")
+        st.caption(f"目前選擇：{cur.get('symbol')}｜買入日 {cur.get('buy_date','—')}｜可用股數 {cur_qty:,}")
 
         c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
