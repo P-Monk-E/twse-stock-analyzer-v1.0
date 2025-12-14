@@ -5,28 +5,29 @@ import stocks_page
 import etf_page
 import portfolio_page
 
-st.sidebar.title("選擇頁面")
+# ---------------------------
+# 讀取 URL query 參數
+# ---------------------------
+query_params = st.experimental_get_query_params()
+q_page = query_params.get("page", [None])[0]
+q_symbol = query_params.get("symbol", [None])[0]
 
-# 🔑 統一用 session_state 控制頁面
-if "page" not in st.session_state:
-    st.session_state["page"] = "推薦"
+st.sidebar.title("主選單")
 
+# 先依照 query 參數決定哪一頁
 pages = ["推薦", "股票", "ETF", "庫存"]
-current_index = pages.index(st.session_state["page"])
+if q_page in pages:
+    current_page = q_page
+else:
+    # 沒有 query 參數時用側欄選單
+    current_page = st.sidebar.radio("選擇頁面", pages)
 
-selected_page = st.sidebar.radio(
-    "主選單",
-    pages,
-    index=current_index
-)
-
-st.session_state["page"] = selected_page
-
-if selected_page == "推薦":
+# 顯示對應頁面
+if current_page == "推薦":
     recommend_page.show()
-elif selected_page == "股票":
-    stocks_page.show()
-elif selected_page == "ETF":
-    etf_page.show()
-elif selected_page == "庫存":
+elif current_page == "股票":
+    stocks_page.show(q_symbol)
+elif current_page == "ETF":
+    etf_page.show(q_symbol)
+elif current_page == "庫存":
     portfolio_page.show()
