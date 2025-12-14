@@ -5,27 +5,20 @@ import stocks_page
 import etf_page
 import portfolio_page
 
-PAGES = ["推薦", "股票", "ETF", "庫存"]
+st.sidebar.title("主選單")
 
-# 讀取 URL 參數
-query_params = st.experimental_get_query_params()
-default_page = query_params.get("page", ["推薦"])[0]
+# ✅ 修改三：確保頁面能切換與重新導向
+if "page" not in st.session_state:
+    st.session_state["page"] = "推薦"
 
-# 防呆：確保 default_page 在 PAGES 裡
-if default_page not in PAGES:
-    default_page = "推薦"
+selected_page = st.sidebar.radio("選擇頁面", ["推薦", "股票", "ETF", "庫存"], index=["推薦", "股票", "ETF", "庫存"].index(st.session_state["page"]))
+st.session_state["page"] = selected_page
 
-page = st.sidebar.radio(
-    "選擇頁面",
-    PAGES,
-    index=PAGES.index(default_page)
-)
-
-if page == "推薦":
+if st.session_state["page"] == "推薦":
     recommend_page.show()
-elif page == "股票":
+elif st.session_state["page"] == "股票":
     stocks_page.show()
-elif page == "ETF":
+elif st.session_state["page"] == "ETF":
     etf_page.show()
-elif page == "庫存":
+elif st.session_state["page"] == "庫存":
     portfolio_page.show()
