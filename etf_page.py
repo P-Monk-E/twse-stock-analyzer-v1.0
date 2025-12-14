@@ -60,22 +60,20 @@ def show(prefill_symbol: str | None = None) -> None:
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Alpha(年化)", f"{stats['Alpha']:.4f}" if stats["Alpha"] is not None else "—")
-            st.caption(_tag(stats["Alpha"], 0, True) + " 越大越好")
+            st.metric("Alpha(年化)", f"{stats.get('Alpha'):.4f}" if stats.get("Alpha") is not None else "—")
+            st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
         with col2:
-            st.metric("Sharpe Ratio", f"{stats['Sharpe Ratio']:.2f}" if stats["Sharpe Ratio"] is not None else "—")
-            st.caption(_tag(stats["Sharpe Ratio"], 1, True) + " >1 佳")
+            st.metric("Sharpe Ratio", f"{stats.get('Sharpe Ratio'):.2f}" if stats.get("Sharpe Ratio") is not None else "—")
+            st.caption(_tag(stats.get("Sharpe Ratio"), 1, True) + " >1 佳")
         with col3:
-            st.metric("Beta", f"{stats['Beta']:.2f}" if stats["Beta"] is not None else "—")
+            st.metric("Beta", f"{stats.get('Beta'):.2f}" if stats.get("Beta") is not None else "—")
             st.caption("相對市場波動")
+
         grades = {}
+        g, _ = grade_sharpe(stats.get("Sharpe Ratio")); grades["Sharpe"] = (g, "")
+        st.write(f"**Sharpe Ratio**：{stats.get('Sharpe Ratio', float('nan')):.2f} {g}")
 
-        g, _ = grade_sharpe(stats["Sharpe Ratio"])
-        grades["Sharpe"] = (g, "")
-        st.write(f"**Sharpe Ratio**：{stats['Sharpe Ratio']:.2f} {g}")
-
-        g, _ = grade_treynor(stats.get("Treynor"))
-        grades["Treynor"] = (g, "")
+        g, _ = grade_treynor(stats.get("Treynor")); grades["Treynor"] = (g, "")
         st.write(f"**Treynor Ratio**：{stats.get('Treynor', float('nan')):.2f} {g}")
 
         if has_any_critical(grades):
@@ -83,7 +81,8 @@ def show(prefill_symbol: str | None = None) -> None:
 
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
-        st.caption(f"MADR：{stats['MADR']:.4f}" if stats["MADR"] is not None else "MADR：—")
+        madr = stats.get("MADR")
+        st.caption(f"MADR：{madr:.4f}" if madr is not None and pd.notna(madr) else "MADR：—")
 
     except Exception as e:
         st.error(f"❌ 查詢 ETF 失敗：{e}")
