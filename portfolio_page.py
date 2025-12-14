@@ -53,14 +53,14 @@ def _qp_get(name: str, default: str) -> str:
     return st.query_params.get(name, default)
 
 def _qp_set_or_del(name: str, value: str | None):
-    if value is None or value == "":
+    if value is None or value == "" or value == "":  # 清理空值
         if name in st.query_params:
             del st.query_params[name]
     else:
         st.query_params[name] = str(value)
 
 def _sync_search():
-    _qp_set_or_del("pf_q", (st.session_state.get("pf_q") or "").strip())
+    _qp_set_or_del("pf_q", st.session_state.get("pf_q", "").strip())
 
 def _sync_min_ret():
     v = st.session_state.get("pf_min_ret")
@@ -80,6 +80,7 @@ def show():
 
     # ---- Filters & Sorting (Sidebar) ----
     with st.sidebar.expander("篩選 / 排序", expanded=True):
+        # 預設值由 URL 讀入
         default_q = _qp_get("pf_q", "")
         default_min_ret_str = _qp_get("pf_min_ret", "")
         try:
@@ -87,7 +88,7 @@ def show():
         except Exception:
             default_min_ret = 0.0
         default_sort = _qp_get("pf_sort", "報酬率")
-        default_asc = _qp_get("pf_asc", "0")
+        default_asc = _qp_get("pf_asc", "0")  # 預設降冪
         default_asc_bool = default_asc == "1"
 
         st.text_input("搜尋代碼（包含字串）", value=default_q, key="pf_q", on_change=_sync_search)
@@ -133,15 +134,19 @@ def show():
     rows = []
     total_capital = 0.0
     total_value = 0.0
-    total_unrealized = 0.0
-    total_realized = 0.0
+    total_unrealized = 0.0  # 依現價計
+    total_realized = 0.0    # 簡化：此版本未追蹤賣出，保持 0
 
     for idx, pos in enumerate(portfolio):
         t = pos.get("ticker", "").upper()
         sh = float(pos.get("shares", 0))
         cost = float(pos.get("cost", 0.0))
         latest = get_latest_price(t)
-        price = 0.0 if latest is None else latest
+        if latest is None:
+            price = 0.0
+            st.warning(f"{t} 無法取得現價。")
+        else:
+            price = latest
 
         value = price * sh
         profit = (price - cost) * sh
@@ -209,6 +214,7 @@ def show():
                         st.error(f"刪除失敗：{e}")
 
     # ---- Totals ----
+    st.divider()
     total_return = ((total_value - total_capital) / total_capital * 100) if total_capital > 0 else 0.0
     st.markdown(f"🔥 **總市值：{round(total_value,2)}**")
     st.markdown(f"💵 **總投入資金：{round(total_capital,2)}**")
