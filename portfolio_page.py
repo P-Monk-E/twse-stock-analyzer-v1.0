@@ -11,36 +11,35 @@ import streamlit as st
 import yfinance as yf
 
 SAVE_PATH = "portfolio.json"
-REALIZED_PATH = "realized_trades.json"  # 賣出紀錄（已實現損益）
+REALIZED_PATH = "realized_trades.json"  # 已實現交易紀錄
 
 
-# ------------------------- Helpers: format -------------------------
-def fmt4(x: Optional[float]) -> str:
-    """數字到小數 4 位 + 千分位；None/NaN → '—'"""
-    try:
-        if x is None or (isinstance(x, float) and pd.isna(x)):
-            return "—"
-        return f"{float(x):,.4f}"
-    except Exception:
-        return "—"
-
-
-def fmtpct2(x: Optional[float]) -> str:
-    """百分比到小數 2 位；None/NaN → '—'"""
-    try:
-        if x is None or (isinstance(x, float) and pd.isna(x)):
-            return "—"
-        return f"{float(x):.2f}%"
-    except Exception:
-        return "—"
-
-
+# ---------- Utils ----------
 def guess_is_etf(symbol: str) -> bool:
-    # 台灣多數 ETF 為 00xxx；簡易判斷即可導向正確頁面
-    return symbol.strip().upper().startswith("00")
+    return symbol.strip().upper().startswith("00")  # why: 台灣 ETF 多為 00xxx
 
 
-# ------------------------- Storage -------------------------
+@st.cache_data(ttl=3600)
+def get_latest_price(symbol: str) -> Optional[float]:
+    s = symbol.upper().strip()
+    cands = [s] if s.endswith((".TW", ".TWO")) else [f"{s}.TW", f"{s}.TWO"]
+    for c in cands:
+        try:
+            p = yf.Ticker(c).fast_info.get("lastPrice")
+            if p:
+                return float(p)
+        except Exception:
+            pass
+        try:
+            hist = yf.Ticker(c).history(period="1d")
+            if not hist.empty:
+                return float(hist["Close"].iloc[-1])
+        except Exception:
+            continue
+    return None
+
+
+# ---------- Storage ----------
 def _load_portfolio() -> List[Dict[str, Any]]:
     if "portfolio" in st.session_state and isinstance(st.session_state.portfolio, list):
         return st.session_state.portfolio
@@ -87,28 +86,7 @@ def _append_realized(rec: Dict[str, Any]) -> None:
         st.warning(f"寫入 {REALIZED_PATH} 失敗：{e}")
 
 
-# ------------------------- Quote -------------------------
-@st.cache_data(ttl=3600)
-def get_latest_price(symbol: str) -> Optional[float]:
-    s = symbol.upper().strip()
-    cands = [s] if s.endswith((".TW", ".TWO")) else [f"{s}.TW", f"{s}.TWO"]
-    for c in cands:
-        try:
-            p = yf.Ticker(c).fast_info.get("lastPrice")
-            if p:
-                return float(p)
-        except Exception:
-            pass
-        try:
-            hist = yf.Ticker(c).history(period="1d")
-            if not hist.empty:
-                return float(hist["Close"].iloc[-1])
-        except Exception:
-            continue
-    return None
-
-
-# ------------------------- Actions -------------------------
+# ---------- Actions ----------
 def _delete_position(idx: int) -> None:
     data = _load_portfolio()
     if 0 <= idx < len(data):
@@ -127,14 +105,11 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
     cur_qty = int(pos.get("qty", 0))
     cost = float(pos.get("cost", 0.0))
     if sell_qty <= 0:
-        st.warning("賣出數量需大於 0。")
-        return
+        st.warning("賣出數量需大於 0。"); return
     if sell_qty > cur_qty:
-        st.warning("賣出數量不可大於目前持股。")
-        return
+        st.warning("賣出數量不可大於目前持股。"); return
     if sell_price <= 0:
-        st.warning("請輸入正確的賣出價格。")
-        return
+        st.warning("請輸入正確的賣出價格。"); return
 
     realized_pnl = (sell_price - cost) * sell_qty
     _append_realized(
@@ -153,16 +128,16 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
         {"date": sell_date.isoformat(), "qty": int(sell_qty), "price": float(sell_price)}
     )
     if pos["qty"] == 0:
-        data.pop(idx)  # 全部賣出即移除
+        data.pop(idx)  # why: 全賣出移除空紀錄
         st.info("此筆持股已全部賣出並移除。")
     _save_portfolio()
     st.success("已更新持股與已實現損益。")
     st.rerun()
 
 
-# ------------------------- Confirm Dialog -------------------------
+# ---------- Confirm ----------
 def _open_confirm(action: Dict[str, Any]) -> None:
-    st.session_state["confirm"] = action  # 集中保存待確認動作
+    st.session_state["confirm"] = action
 
 
 def _clear_confirm() -> None:
@@ -173,61 +148,45 @@ def _show_confirm_ui() -> None:
     info = st.session_state.get("confirm")
     if not info:
         return
-
-    act = info.get("type")
-    idx = info.get("idx", -1)
+    act = info.get("type"); idx = info.get("idx", -1)
     if act == "delete":
-        title = "確認刪除"
-        msg = f"確定要 **刪除** 第 {idx + 1} 筆持股嗎？此動作無法復原。"
+        title = "確認刪除"; msg = f"確定要 **刪除** 第 {idx + 1} 筆持股嗎？此動作無法復原。"
     elif act == "sell":
         title = "確認賣出"
-        msg = (
-            f"確定要於 **{info.get('sell_date')}** 以 **{info.get('sell_price'):.4f}** "
-            f"價格賣出 **{info.get('sell_qty')} 股**（第 {idx + 1} 筆）嗎？"
-        )
+        msg = f"確定要於 **{info.get('sell_date')}** 以 **{info.get('sell_price'):.4f}** 價格賣出 **{info.get('sell_qty')} 股**（第 {idx + 1} 筆）嗎？"
     else:
-        _clear_confirm()
-        return
+        _clear_confirm(); return
 
     def _on_confirm() -> None:
         if act == "delete":
-            _clear_confirm()
-            _delete_position(idx)
+            _clear_confirm(); _delete_position(idx)
         else:
-            _clear_confirm()
-            _sell_position(idx, int(info["sell_qty"]), info["sell_date"], float(info["sell_price"]))
+            _clear_confirm(); _sell_position(idx, int(info["sell_qty"]), info["sell_date"], float(info["sell_price"]))
 
-    if hasattr(st, "dialog"):  # 新版 Streamlit 有彈窗
+    if hasattr(st, "dialog"):
         @st.dialog(title)
         def _dlg() -> None:
             st.write(msg)
             c1, c2 = st.columns(2)
-            if c1.button("確認", type="primary", key="confirm_ok"):
-                _on_confirm()
-            if c2.button("取消", key="confirm_cancel"):
-                _clear_confirm()
-                st.rerun()
-
+            if c1.button("確認", type="primary", key="confirm_ok"): _on_confirm()
+            if c2.button("取消", key="confirm_cancel"): _clear_confirm(); st.rerun()
         _dlg()
-    else:  # 退化 UI
+    else:
         st.warning(f"**{title}**｜{msg}")
         c1, c2 = st.columns(2)
-        if c1.button("確認", type="primary", key="fallback_ok"):
-            _on_confirm()
-        if c2.button("取消", key="fallback_cancel"):
-            _clear_confirm()
-            st.rerun()
+        if c1.button("確認", type="primary", key="fallback_ok"): _on_confirm()
+        if c2.button("取消", key="fallback_cancel"): _clear_confirm(); st.rerun()
 
 
-# ------------------------- Page -------------------------
+# ---------- Page ----------
 def show(prefill_symbol: Optional[str] = None) -> None:
     st.header("📦 我的庫存")
-    _show_confirm_ui()  # 若有待確認動作，先顯示彈窗
+    _show_confirm_ui()
 
     data = _load_portfolio()
     realized = _load_realized()
 
-    # ---- 新增持股 ----
+    # 新增持股
     with st.expander("新增持股", expanded=True):
         c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
         with c1:
@@ -242,14 +201,9 @@ def show(prefill_symbol: Optional[str] = None) -> None:
             if not sym.strip():
                 st.warning("請輸入代碼。")
             else:
-                data.append(
-                    {"symbol": sym.strip(), "qty": int(qty), "cost": float(cost), "buy_date": buy_date.isoformat()}
-                )
-                _save_portfolio()
-                st.success("已加入。")
-                st.rerun()
+                data.append({"symbol": sym.strip(), "qty": int(qty), "cost": float(cost), "buy_date": buy_date.isoformat()})
+                _save_portfolio(); st.success("已加入。"); st.rerun()
 
-    # ---- 已實現損益（即便無持倉也顯示）----
     total_realized = sum(float(x.get("pnl", 0.0)) for x in realized)
 
     if not data:
@@ -257,37 +211,37 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         st.metric("已實現損益", f"{total_realized:,.4f}")
         return
 
-    # ---- 表格資料（此處就把數字格式化成字串）----
+    # 構建 DataFrame（保持數值型 → Styler 可套色與格式）
     rows: List[Dict[str, Any]] = []
     principal = 0.0
     total_value = 0.0
+    links: List[Dict[str, str]] = []
     for row in data:
         sym = row.get("symbol")
         qty = float(row.get("qty", 0.0))
         cost = float(row.get("cost", 0.0))
         price = get_latest_price(sym)
         value = (price or 0.0) * qty
-        unreal = (price - cost) * qty if price is not None else None
-        rate_pct = ((price - cost) / cost * 100.0) if (price is not None and cost > 0) else None
-        link = f"./?nav={'ETF' if guess_is_etf(sym) else '股票'}&symbol={sym}"
-
+        unreal = (price - cost) * qty if price is not None else float("nan")
+        rate_pct = ((price - cost) / cost * 100.0) if (price is not None and cost > 0) else float("nan")
         rows.append(
             {
                 "買入日": (row.get("buy_date") or "—"),
                 "代碼": sym,
-                "股數": fmt4(qty),
-                "成本/股": fmt4(cost),
-                "現價": fmt4(price),
-                "市值": fmt4(value),
-                "未實現損益": fmt4(unreal),
-                "回報率%": fmtpct2(rate_pct),
-                "連結": link,
+                "股數": qty,
+                "成本/股": cost,
+                "現價": price,
+                "市值": value,
+                "未實現損益": unreal,
+                "回報率%": rate_pct,
             }
         )
+        links.append({"代碼": sym, "前往": f"./?nav={'ETF' if guess_is_etf(sym) else '股票'}&symbol={sym}"})
         principal += cost * qty
         total_value += value
 
     df = pd.DataFrame(rows)
+    # 日期排序
     try:
         df["_d"] = pd.to_datetime(df["買入日"], errors="coerce")
         df.sort_values(by=["_d", "代碼"], ascending=[True, True], inplace=True)
@@ -295,23 +249,44 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     except Exception:
         pass
 
-    # 用 data_editor 顯示（數字已是字串；連結使用 LinkColumn）
+    # 正紅負綠（未實現損益、回報率）
+    def _pos_neg_color(v: Any) -> str:
+        if isinstance(v, (int, float)) and pd.notna(v):
+            if v > 0: return "color:red;"
+            if v < 0: return "color:green;"
+        return ""
+
+    # 格式：數字4位、百分比2位；缺值顯示 —
+    styled = (
+        df.style
+        .format(
+            {
+                "股數": "{:,.4f}",
+                "成本/股": "{:,.4f}",
+                "現價": "{:,.4f}",
+                "市值": "{:,.4f}",
+                "未實現損益": "{:,.4f}",
+                "回報率%": "{:.2f}%",
+            },
+            na_rep="—",
+        )
+        .applymap(_pos_neg_color, subset=["未實現損益"])
+        .applymap(_pos_neg_color, subset=["回報率%"])
+    )
+    st.dataframe(styled, use_container_width=True)
+
+    # 連結清單（保持可點）
+    st.caption("快速前往：")
+    link_df = pd.DataFrame(links)
     st.data_editor(
-        df,
+        link_df,
         use_container_width=True,
         disabled=True,
-        column_config={
-            "股數": st.column_config.TextColumn(),
-            "成本/股": st.column_config.TextColumn(),
-            "現價": st.column_config.TextColumn(),
-            "市值": st.column_config.TextColumn(),
-            "未實現損益": st.column_config.TextColumn(),
-            "回報率%": st.column_config.TextColumn(),
-            "連結": st.column_config.LinkColumn(label="連結", help="點我前往該標的頁面"),
-        },
+        column_config={"前往": st.column_config.LinkColumn(label="前往專區")},
+        hide_index=True,
     )
 
-    # ---- 總計（4位 / 2位%）----
+    # 總計
     pnl_unrealized = total_value - principal
     total_return_rate = (pnl_unrealized / principal * 100.0) if principal > 0 else 0.0
 
@@ -320,29 +295,18 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         st.metric("總市值", f"{total_value:,.4f}")
         st.caption(f"本金：{principal:,.4f}")
     with c2:
-        st.metric(
-            "總未實現損益",
-            f"{pnl_unrealized:,.4f}",
-            delta=f"{total_return_rate:.2f}%",
-            delta_color=("inverse" if pnl_unrealized < 0 else "normal"),
-        )
+        st.metric("總未實現損益", f"{pnl_unrealized:,.4f}", delta=f"{total_return_rate:.2f}%",
+                  delta_color=("inverse" if pnl_unrealized < 0 else "normal"))
+        # why: st.metric 本身數字顏色不可改，用額外 markdown 補「正紅負綠」
+        color = "red" if pnl_unrealized > 0 else ("green" if pnl_unrealized < 0 else "inherit")
+        st.markdown(f"<span style='color:{color};'>（未實現損益顏色指示）</span>", unsafe_allow_html=True)
         st.caption(f"已實現損益：{total_realized:,.4f}")
 
-    # ---- 管理持股（統一操作面板）----
+    # 管理持股（獨立面板，避免誤觸）
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
-        options = [
-            f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}"
-            for i, r in enumerate(data)
-        ]
-        sel_idx = st.selectbox(
-            "選擇要操作的持股",
-            options=range(len(options)),
-            format_func=lambda i: options[i],
-            key="mgmt_sel",
-        )
-
-        cur = data[sel_idx]
-        cur_qty = int(cur.get("qty", 0))
+        options = [f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}" for i, r in enumerate(data)]
+        sel_idx = st.selectbox("選擇要操作的持股", options=range(len(options)), format_func=lambda i: options[i], key="mgmt_sel")
+        cur = data[sel_idx]; cur_qty = int(cur.get("qty", 0))
         st.caption(f"目前選擇：{cur.get('symbol')}｜買入日 {cur.get('buy_date','—')}｜可用股數 {cur_qty:,}")
 
         c1, c2, c3 = st.columns([1, 1, 1])
@@ -351,27 +315,12 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                 _open_confirm({"type": "delete", "idx": sel_idx})
         with c2:
             sell_date_val = st.date_input("賣出日", value=date.today(), key="sell_date_global")
-            sell_qty_val = st.number_input(
-                "賣出數量",
-                min_value=1,
-                max_value=max(cur_qty, 1),
-                value=min(100, max(cur_qty, 1)),
-                step=1,
-                key="sell_qty_global",
-            )
+            sell_qty_val = st.number_input("賣出數量", min_value=1, max_value=max(cur_qty, 1),
+                                           value=min(100, max(cur_qty, 1)), step=1, key="sell_qty_global")
         with c3:
-            sell_price_val = st.number_input(
-                "賣出價格", min_value=0.0, value=0.0, step=0.0001, key="sell_price_global"
-            )
+            sell_price_val = st.number_input("賣出價格", min_value=0.0, value=0.0, step=0.0001, key="sell_price_global")
             if st.button("賣出", key="btn_sell", type="primary"):
-                _open_confirm(
-                    {
-                        "type": "sell",
-                        "idx": sel_idx,
-                        "sell_qty": int(sell_qty_val),
-                        "sell_date": sell_date_val,
-                        "sell_price": float(sell_price_val),
-                    }
-                )
+                _open_confirm({"type": "sell", "idx": sel_idx, "sell_qty": int(sell_qty_val),
+                               "sell_date": sell_date_val, "sell_price": float(sell_price_val)})
 
     _show_confirm_ui()
