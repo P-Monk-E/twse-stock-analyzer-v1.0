@@ -1,4 +1,38 @@
-# /mount/src/twse-stock-analyzer-v1.0/portfolio_page.py
+# =========================================
+# app.py（只需更新 main() 裡取得預設選項的部分）
+# =========================================
+from __future__ import annotations
+
+import streamlit as st
+import stocks_page
+import etf_page
+import portfolio_page
+
+PAGES = ["股票", "ETF", "庫存"]
+
+def main() -> None:
+    st.sidebar.header("主選單")
+    # 允許以 URL 參數直接導向特定頁面
+    nav_param = st.query_params.get("nav")
+    default_index = PAGES.index(nav_param) if nav_param in PAGES else 0
+
+    nav = st.sidebar.radio("選擇頁面", PAGES, index=default_index, key="nav_page")
+    q_symbol = st.query_params.get("symbol")
+
+    if nav == "股票":
+        stocks_page.show(prefill_symbol=q_symbol)
+    elif nav == "ETF":
+        etf_page.show(prefill_symbol=q_symbol)
+    else:
+        portfolio_page.show(prefill_symbol=q_symbol)
+
+if __name__ == "__main__":
+    main()
+
+
+# =========================================
+# portfolio_page.py（完整覆蓋）
+# =========================================
 from __future__ import annotations
 
 import json
@@ -11,7 +45,7 @@ import streamlit as st
 import yfinance as yf
 
 SAVE_PATH = "portfolio.json"
-REALIZED_PATH = "realized_trades.json"  # 已實現交易紀錄
+REALIZED_PATH = "realized_trades.json"
 
 
 # ------------------------- Storage -------------------------
@@ -61,7 +95,7 @@ def _append_realized(rec: Dict[str, Any]) -> None:
         st.warning(f"寫入 {REALIZED_PATH} 失敗：{e}")
 
 
-# ------------------------- Quote -------------------------
+# ------------------------- Quote / Meta -------------------------
 @st.cache_data(ttl=3600)
 def get_latest_price(symbol: str) -> Optional[float]:
     s = symbol.upper().strip()
@@ -80,6 +114,26 @@ def get_latest_price(symbol: str) -> Optional[float]:
         except Exception:
             continue
     return None
+
+@st.cache_data(ttl=3600)
+def get_display_name(symbol: str) -> str | None:
+    """取中文/英文名稱；why: 表格顯示用。"""
+    s = symbol.upper().strip()
+    cands = [s] if s.endswith((".TW", ".TWO")) else [f"{s}.TW", f"{s}.TWO"]
+    for c in cands:
+        try:
+            info = yf.Ticker(c).info or {}
+            name = info.get("shortName") or info.get("longName")
+            if name:
+                return str(name)
+        except Exception:
+            continue
+    return None
+
+def guess_is_etf(symbol: str) -> bool:
+    """簡易判斷：台灣多數 ETF 代碼以 00 開頭。"""
+    s = symbol.strip().upper()
+    return s.startswith("00")
 
 
 # ------------------------- Actions -------------------------
@@ -134,10 +188,8 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
 def _open_confirm(action: Dict[str, Any]) -> None:
     st.session_state["confirm"] = action
 
-
 def _clear_confirm() -> None:
     st.session_state.pop("confirm", None)
-
 
 def _show_confirm_ui() -> None:
     info = st.session_state.get("confirm")
@@ -214,7 +266,7 @@ def show(prefill_symbol: str | None = None) -> None:
         st.metric("已實現損益", f"{total_realized:,.4f}")
         return
 
-    # ---- 表格資料（保持數值，格式化階段再加千分位/百分比）----
+    # ---- 表格資料 ----
     rows = []; principal = 0.0; total_value = 0.0
     for row in data:
         sym = row.get("symbol")
@@ -224,17 +276,22 @@ def show(prefill_symbol: str | None = None) -> None:
         value = (price or 0.0) * qty
         unreal = (price - cost) * qty if price is not None else float("nan")
         rate_pct = ((price - cost) / cost * 100.0) if (price is not None and cost > 0) else float("nan")
+        name = get_display_name(sym) or "—"
+        is_etf = guess_is_etf(sym)
+        link = f"./?nav={'ETF' if is_etf else '股票'}&symbol={sym}"
 
         rows.append(
             {
                 "買入日": (row.get("buy_date") or "—"),
                 "代碼": sym,
+                "名稱": name,
                 "股數": qty,
                 "成本/股": cost,
                 "現價": price,
                 "市值": value,
                 "未實現損益": unreal,
                 "回報率%": rate_pct,
+                "連結": link,  # 透過 LinkColumn 呈現
             }
         )
         principal += cost * qty
@@ -255,7 +312,7 @@ def show(prefill_symbol: str | None = None) -> None:
             if v < 0: return "color:green;"
         return ""
 
-    # 指定格式（金額/數量4位+千分位，百分比2位）
+    # 用 data_editor + LinkColumn 呈現可點連結；數字格式：千分位4位，小數百分比2位
     try:
         styled = (
             df.style
@@ -266,18 +323,35 @@ def show(prefill_symbol: str | None = None) -> None:
                     "現價": "{:,.4f}",
                     "市值": "{:,.4f}",
                     "未實現損益": "{:,.4f}",
-                    "回報率%": "{:.2f}%",  # 僅顯示百分比符號與兩位小數
+                    "回報率%": "{:.2f}%",
                 },
                 na_rep="—",
             )
             .applymap(_style_num, subset=["未實現損益"])
             .applymap(_style_num, subset=["回報率%"])
         )
-        st.dataframe(styled, use_container_width=True)
+        st.data_editor(
+            styled, use_container_width=True, disabled=True,
+            column_config={
+                "連結": st.column_config.LinkColumn(label="連結", help="點我前往該標的頁面"),
+            },
+        )
     except Exception:
-        st.dataframe(df, use_container_width=True)
+        # 備援：若 styler 不可用，仍提供可點連結欄
+        st.data_editor(
+            df, use_container_width=True, disabled=True,
+            column_config={
+                "股數": st.column_config.NumberColumn(format="%.4f"),
+                "成本/股": st.column_config.NumberColumn(format="%.4f"),
+                "現價": st.column_config.NumberColumn(format="%.4f"),
+                "市值": st.column_config.NumberColumn(format="%.4f"),
+                "未實現損益": st.column_config.NumberColumn(format="%.4f"),
+                "回報率%": st.column_config.NumberColumn(format="%.2f%%"),
+                "連結": st.column_config.LinkColumn(label="連結", help="點我前往該標的頁面"),
+            },
+        )
 
-    # ---- 總計（4位 / 2位%）----
+    # ---- 總計 ----
     pnl_unrealized = total_value - principal
     total_return_rate = (pnl_unrealized / principal * 100.0) if principal > 0 else 0.0
 
@@ -294,7 +368,7 @@ def show(prefill_symbol: str | None = None) -> None:
         )
         st.caption(f"已實現損益：{total_realized:,.4f}")
 
-    # ---- 管理持股（刪除 / 賣出）----
+    # ---- 管理持股（刪除 / 賣出；集中於面板）----
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
         options = [f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}" for i, r in enumerate(data)]
         sel_idx = st.selectbox("選擇要操作的持股", options=range(len(options)), format_func=lambda i: options[i], key="mgmt_sel")
