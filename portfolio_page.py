@@ -3,17 +3,13 @@ import yfinance as yf
 import json
 import os
 from datetime import date
-from stock_utils import TICKER_NAME_MAP
 
 SAVE_PATH = "portfolio.json"
 
 @st.cache_data(ttl=3600)
 def get_latest_price(symbol: str):
     symbol = symbol.upper().strip()
-    candidates = (
-        [symbol] if symbol.endswith((".TW", ".TWO"))
-        else [f"{symbol}.TW", f"{symbol}.TWO"]
-    )
+    candidates = [symbol] if symbol.endswith((".TW", ".TWO")) else [f"{symbol}.TW", f"{symbol}.TWO"]
     for tkr in candidates:
         try:
             hist = yf.Ticker(tkr).history(period="5d")
@@ -64,11 +60,11 @@ def show():
                 st.session_state.portfolio.append({
                     "ticker": ticker,
                     "shares": shares,
-                    "cost": round(cost, 2),
-                    "price": round(price, 2),
-                    "capital": round(capital, 2),
-                    "value": round(value, 2),
-                    "return": round(rtn, 2),
+                    "cost": round(cost,2),
+                    "price": round(price,2),
+                    "capital": round(capital,2),
+                    "value": round(value,2),
+                    "return": round(rtn,2),
                     "buy_date": buy_date.strftime("%Y-%m-%d"),
                     "realized_profit": 0.0
                 })
@@ -96,22 +92,16 @@ def show():
         total_unrealized += unrealized
         total_realized += stock.get("realized_profit", 0.0)
 
-        col1, col2 = st.columns([6, 1])
+        col1, col2 = st.columns([6,1])
         with col1:
             warn = " ⚠️" if stock["return"] < 0 else ""
-            stock_name = TICKER_NAME_MAP.get(stock["ticker"], "")
+            page_type = "ETF" if stock["ticker"].startswith("00") else "股票"
+            link = f"[{stock['ticker']}](/?選擇頁面={page_type}&輸入={stock['ticker']})"
             st.markdown(
-                f"**{stock['ticker']}** {stock_name}｜"
-                f"現價 {stock['price']}｜"
-                f"股數 {stock['shares']}｜"
-                f"市值 {stock['value']}｜"
-                f"報酬率 {stock['return']}%{warn}"
+                f"**{link}**｜現價 {stock['price']}｜股數 {stock['shares']}｜市值 {stock['value']}｜報酬率 {stock['return']}%{warn}",
+                unsafe_allow_html=True
             )
-            st.caption(
-                f"購買日：{stock['buy_date']}｜"
-                f"買入金額：{stock['capital']} 元｜"
-                f"未實現損益：{round(unrealized, 2)} 元"
-            )
+            st.caption(f"購買日：{stock['buy_date']}｜買入金額：{stock['capital']} 元｜未實現損益：{round(unrealized, 2)} 元")
 
             if st.button("💰 售出", key=f"sell_btn_{idx}"):
                 st.session_state[f"show_sell_{idx}"] = not st.session_state.get(f"show_sell_{idx}", False)
