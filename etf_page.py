@@ -7,6 +7,11 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+from risk_grading import (
+    grade_sharpe,
+    grade_treynor,
+    has_any_critical,
+)
 
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
 from chart_utils import plot_candlestick_with_ma
@@ -63,6 +68,18 @@ def show(prefill_symbol: str | None = None) -> None:
         with col3:
             st.metric("Beta", f"{stats['Beta']:.2f}" if stats["Beta"] is not None else "—")
             st.caption("相對市場波動")
+        grades = {}
+
+        g, _ = grade_sharpe(stats["Sharpe Ratio"])
+        grades["Sharpe"] = (g, "")
+        st.write(f"**Sharpe Ratio**：{stats['Sharpe Ratio']:.2f} {g}")
+
+        g, _ = grade_treynor(stats.get("Treynor"))
+        grades["Treynor"] = (g, "")
+        st.write(f"**Treynor Ratio**：{stats.get('Treynor', float('nan')):.2f} {g}")
+
+        if has_any_critical(grades):
+            st.warning("⚠ 系統警告：至少一項核心風險 / 財務指標未達標")
 
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
