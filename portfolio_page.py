@@ -340,8 +340,8 @@ def show(prefill_symbol: Optional[str] = None) -> None:
 
     def _pos_neg_color(v: Any) -> str:
         if isinstance(v, (int, float)) and pd.notna(v):
-            if v > 0: return "color:red;"
-            if v < 0: return "color:green;"
+            if v > 0: return "color:green;"
+            if v < 0: return "color:red;"
         return ""
 
     styled = (
@@ -372,6 +372,43 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         column_config={"前往": st.column_config.LinkColumn(label="前往專區")},
         hide_index=True,
     )
+
+    # ===== 新增：資產配置圓餅圖（依總市值比例） =====
+    st.subheader("資產配置（市值占比）", anchor=False)
+    # 聚合各代碼市值
+    alloc = (
+        df[["代碼", "市值"]]
+        .copy()
+        .dropna(subset=["市值"])
+        .groupby("代碼", as_index=False)["市值"]
+        .sum()
+        .sort_values("市值", ascending=False)
+    )
+    total_mv = alloc["市值"].sum() if not alloc.empty else 0.0
+    if total_mv > 0:
+        alloc["占比%"] = alloc["市值"] / total_mv * 100.0
+
+        # 圓餅圖
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots()
+        ax.pie(
+            alloc["市值"].values,
+            labels=alloc["代碼"].astype(str).values,
+            autopct="%1.1f%%",
+            startangle=90,
+        )
+        ax.axis("equal")  # why: 讓圓形不變形
+        st.pyplot(fig, use_container_width=True)
+
+        # 配置表（數字格式：市值4位、占比2位）
+        alloc_display = alloc.copy()
+        alloc_display["市值"] = alloc_display["市值"].apply(lambda v: f"{v:,.4f}")
+        alloc_display["占比%"] = alloc_display["占比%"].apply(lambda v: f"{v:.2f}%")
+        st.dataframe(alloc_display, use_container_width=True, hide_index=True)
+    else:
+        st.info("目前無可用的市值資料，無法繪製圓餅圖。")
+    # ===== 圓餅圖新增結束 =====
 
     # 總計
     pnl_unrealized = total_value - principal
