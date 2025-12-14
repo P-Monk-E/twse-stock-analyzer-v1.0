@@ -1,8 +1,11 @@
+# /mnt/data/stocks_page.py
 import streamlit as st
 from stock_utils import get_metrics, find_ticker_by_name
 from chart_utils import plot_candlestick_with_ma
 import yfinance as yf
 from datetime import datetime, timedelta
+import math
+import pandas as pd
 
 def show(prefill_symbol=None):
     st.header("📈 股票專區")
@@ -22,7 +25,8 @@ def show(prefill_symbol=None):
     mkt = yf.Ticker("^TWII").history(start=start, end=end)["Close"]
 
     def tag(val, thr, greater=True):
-        if val is None:
+        # NaN 視為未知狀態
+        if val is None or (isinstance(val, float) and math.isnan(val)) or (isinstance(val, (int, float)) and pd.isna(val)):
             return "❓"
         return "✅" if (val >= thr if greater else val <= thr) else "❗"
 
