@@ -95,53 +95,11 @@ def show():
         col1, col2 = st.columns([6,1])
         with col1:
             warn = " ⚠️" if stock["return"] < 0 else ""
-            page_type = "ETF" if stock["ticker"].startswith("00") else "股票"
-            link = f"[{stock['ticker']}](/?選擇頁面={page_type}&輸入={stock['ticker']})"
+            target_page = "股票" if stock["ticker"].isdigit() else "ETF"
             st.markdown(
-                f"**{link}**｜現價 {stock['price']}｜股數 {stock['shares']}｜市值 {stock['value']}｜報酬率 {stock['return']}%{warn}",
-                unsafe_allow_html=True
+                f"**[{stock['ticker']}（{stock['shares']}股）](/?page={target_page}&symbol={stock['ticker']})**｜成本 {stock['cost']}｜現價 {stock['price']}｜市值 {stock['value']}｜報酬率 {stock['return']}%{warn}"
             )
-            st.caption(f"購買日：{stock['buy_date']}｜買入金額：{stock['capital']} 元｜未實現損益：{round(unrealized, 2)} 元")
-
-            if st.button("💰 售出", key=f"sell_btn_{idx}"):
-                st.session_state[f"show_sell_{idx}"] = not st.session_state.get(f"show_sell_{idx}", False)
-
-            if st.session_state.get(f"show_sell_{idx}", False):
-                sell_qty = st.number_input("賣出股數", 1, stock["shares"], value=1, key=f"qty_{idx}")
-                sell_price = st.number_input("賣出價格", min_value=0.0, step=0.01, format="%.2f", key=f"price_{idx}")
-                sell_date = st.date_input("賣出日期", value=date.today(), key=f"date_{idx}")
-
-                if st.button("🚀 確認售出", key=f"confirm_{idx}"):
-                    proceeds = sell_qty * sell_price
-                    cost_basis = sell_qty * stock["cost"]
-                    realized = proceeds - cost_basis
-
-                    st.session_state["pending_sale"] = {
-                        "idx": idx,
-                        "qty": sell_qty,
-                        "price": sell_price,
-                        "date": str(sell_date),
-                        "proceeds": proceeds,
-                        "realized": realized
-                    }
-                    st.rerun()
-
-            if st.session_state.get("pending_sale") and st.session_state["pending_sale"]["idx"] == idx:
-                ps = st.session_state["pending_sale"]
-                st.warning(
-                    f"⚠️ 即將售出 {stock['ticker']} 共 {ps['qty']} 股，售出價格 {ps['price']} 元，"
-                    f"總計 {ps['proceeds']} 元（損益 {round(ps['realized'],2)} 元）"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("⏪ 取消售出", key=f"cancel_{idx}"):
-                        del st.session_state["pending_sale"]
-                        st.rerun()
-                with col_b:
-                    if st.button("✅ 最終確認", key=f"final_{idx}"):
-                        st.session_state["finalizing"] = ps
-                        del st.session_state["pending_sale"]
-                        st.rerun()
+            st.caption(f"購買日：{stock['buy_date']}｜未實現損益：{round(unrealized, 2)} 元")
 
         with col2:
             if st.button("🗑️", key=f"del_{idx}"):
@@ -149,32 +107,8 @@ def show():
                 save_portfolio()
                 st.rerun()
 
-    if "finalizing" in st.session_state:
-        ps = st.session_state["finalizing"]
-        with st.spinner("⏳ 正在執行售出，10 秒後完成…"):
-            import time
-            time.sleep(10)
-
-        idx = ps["idx"]
-        if idx < len(st.session_state.portfolio):
-            stock = st.session_state.portfolio[idx]
-            stock["shares"] -= ps["qty"]
-            stock["capital"] = round(stock["shares"] * stock["cost"], 2)
-            stock["value"] = round(stock["shares"] * stock["price"], 2)
-            stock["return"] = round(((stock["value"] - stock["capital"]) / stock["capital"] * 100)
-                                    if stock["capital"] > 0 else 0, 2)
-            stock["realized_profit"] += round(ps["realized"], 2)
-            if stock["shares"] == 0:
-                st.session_state.portfolio.pop(idx)
-
-        save_portfolio()
-        del st.session_state["finalizing"]
-        st.success("✅ 售出已完成！")
-        st.rerun()
-
     st.divider()
     total_return = ((total_value - total_capital) / total_capital * 100) if total_capital > 0 else 0
-
     st.markdown(f"🔥 **總市值：{round(total_value,2)}**")
     st.markdown(f"💵 **總投入資金：{round(total_capital,2)}**")
     st.markdown(f"📉 **總報酬率：{round(total_return,2)}%**")
