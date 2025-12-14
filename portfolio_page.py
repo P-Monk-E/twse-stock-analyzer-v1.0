@@ -1,4 +1,39 @@
+# =========================================
+# /mount/src/twse-stock-analyzer-v1.0/app.py
+# =========================================
+from __future__ import annotations
+
+import streamlit as st
+import stocks_page
+import etf_page
+import portfolio_page
+
+PAGES = ["股票", "ETF", "庫存"]
+
+
+def main() -> None:
+    st.sidebar.header("主選單")
+    nav_param = st.query_params.get("nav")
+    default_index = PAGES.index(nav_param) if nav_param in PAGES else 0
+
+    nav = st.sidebar.radio("選擇頁面", PAGES, index=default_index, key="nav_page")
+    q_symbol = st.query_params.get("symbol")
+
+    if nav == "股票":
+        stocks_page.show(prefill_symbol=q_symbol)
+    elif nav == "ETF":
+        etf_page.show(prefill_symbol=q_symbol)
+    else:
+        portfolio_page.show(prefill_symbol=q_symbol)
+
+
+if __name__ == "__main__":
+    main()
+
+
+# =========================================
 # /mount/src/twse-stock-analyzer-v1.0/portfolio_page.py
+# =========================================
 from __future__ import annotations
 
 import json
@@ -11,7 +46,7 @@ import streamlit as st
 import yfinance as yf
 
 SAVE_PATH = "portfolio.json"
-REALIZED_PATH = "realized_trades.json"  # 已實現交易紀錄
+REALIZED_PATH = "realized_trades.json"  # 賣出紀錄彙總（已實現損益計算）
 
 
 # ------------------------- Storage -------------------------
@@ -61,7 +96,7 @@ def _append_realized(rec: Dict[str, Any]) -> None:
         st.warning(f"寫入 {REALIZED_PATH} 失敗：{e}")
 
 
-# ------------------------- Quote / Meta -------------------------
+# ------------------------- Quote / Helpers -------------------------
 @st.cache_data(ttl=3600)
 def get_latest_price(symbol: str) -> Optional[float]:
     s = symbol.upper().strip()
@@ -82,26 +117,9 @@ def get_latest_price(symbol: str) -> Optional[float]:
     return None
 
 
-@st.cache_data(ttl=3600)
-def get_display_name(symbol: str) -> Optional[str]:
-    """取中文/英文名稱；抓不到回 None。"""
-    s = symbol.upper().strip()
-    cands = [s] if s.endswith((".TW", ".TWO")) else [f"{s}.TW", f"{s}.TWO"]
-    for c in cands:
-        try:
-            info = yf.Ticker(c).info or {}
-            name = info.get("shortName") or info.get("longName")
-            if name:
-                return str(name)
-        except Exception:
-            continue
-    return None
-
-
 def guess_is_etf(symbol: str) -> bool:
-    """簡易判斷：台灣多數 ETF 代碼以 00 開頭。"""
-    s = symbol.strip().upper()
-    return s.startswith("00")
+    # why: 台灣多數 ETF 為 00xxx；簡易判斷即可導向正確頁面
+    return symbol.strip().upper().startswith("00")
 
 
 # ------------------------- Actions -------------------------
@@ -149,7 +167,7 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
         {"date": sell_date.isoformat(), "qty": int(sell_qty), "price": float(sell_price)}
     )
     if pos["qty"] == 0:
-        data.pop(idx)  # why: 全賣出直接移除
+        data.pop(idx)  # why: 全部賣出即移除，避免殘留空紀錄
         st.info("此筆持股已全部賣出並移除。")
     _save_portfolio()
     st.success("已更新持股與已實現損益。")
@@ -158,7 +176,7 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
 
 # ------------------------- Confirm Dialog -------------------------
 def _open_confirm(action: Dict[str, Any]) -> None:
-    st.session_state["confirm"] = action  # why: 集中管理確認狀態
+    st.session_state["confirm"] = action  # why: 集中保存待確認動作
 
 
 def _clear_confirm() -> None:
@@ -193,7 +211,7 @@ def _show_confirm_ui() -> None:
             _clear_confirm()
             _sell_position(idx, int(info["sell_qty"]), info["sell_date"], float(info["sell_price"]))
 
-    if hasattr(st, "dialog"):
+    if hasattr(st, "dialog"):  # 新版 Streamlit 有彈窗
         @st.dialog(title)
         def _dlg() -> None:
             st.write(msg)
@@ -203,8 +221,9 @@ def _show_confirm_ui() -> None:
             if c2.button("取消", key="confirm_cancel"):
                 _clear_confirm()
                 st.rerun()
+
         _dlg()
-    else:
+    else:  # 退化 UI
         st.warning(f"**{title}**｜{msg}")
         c1, c2 = st.columns(2)
         if c1.button("確認", type="primary", key="fallback_ok"):
@@ -217,7 +236,7 @@ def _show_confirm_ui() -> None:
 # ------------------------- Page -------------------------
 def show(prefill_symbol: Optional[str] = None) -> None:
     st.header("📦 我的庫存")
-    _show_confirm_ui()
+    _show_confirm_ui()  # 若有待確認動作，先顯示彈窗
 
     data = _load_portfolio()
     realized = _load_realized()
@@ -264,7 +283,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         value = (price or 0.0) * qty
         unreal = (price - cost) * qty if price is not None else float("nan")
         rate_pct = ((price - cost) / cost * 100.0) if (price is not None and cost > 0) else float("nan")
-        name = get_display_name(sym) or "—"
         is_etf = guess_is_etf(sym)
         link = f"./?nav={'ETF' if is_etf else '股票'}&symbol={sym}"
 
@@ -272,7 +290,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
             {
                 "買入日": (row.get("buy_date") or "—"),
                 "代碼": sym,
-                "名稱": name,
                 "股數": qty,
                 "成本/股": cost,
                 "現價": price,
@@ -293,6 +310,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     except Exception:
         pass
 
+    # 正紅負綠（只套用在 dataframe/styler 路徑）
     def _style_num(v: Any) -> str:
         if isinstance(v, (int, float)) and pd.notna(v):
             if v > 0:
@@ -301,7 +319,23 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                 return "color:green;"
         return ""
 
+    # 優先使用 data_editor（可點連結），同時提供數字格式；若需要紅綠色，可退回 dataframe+Styler（但連結將不可點）
     try:
+        st.data_editor(
+            df,
+            use_container_width=True,
+            disabled=True,
+            column_config={
+                "股數": st.column_config.NumberColumn(format="%,.4f"),
+                "成本/股": st.column_config.NumberColumn(format="%,.4f"),
+                "現價": st.column_config.NumberColumn(format="%,.4f"),
+                "市值": st.column_config.NumberColumn(format="%,.4f"),
+                "未實現損益": st.column_config.NumberColumn(format="%,.4f"),
+                "回報率%": st.column_config.NumberColumn(format="%.2f%%"),
+                "連結": st.column_config.LinkColumn(label="連結", help="點我前往該標的頁面"),
+            },
+        )
+    except Exception:
         styled = (
             df.style
             .format(
@@ -318,29 +352,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
             .applymap(_style_num, subset=["未實現損益"])
             .applymap(_style_num, subset=["回報率%"])
         )
-        st.data_editor(
-            styled,
-            use_container_width=True,
-            disabled=True,
-            column_config={
-                "連結": st.column_config.LinkColumn(label="連結", help="點我前往該標的頁面"),
-            },
-        )
-    except Exception:
-        st.data_editor(
-            df,
-            use_container_width=True,
-            disabled=True,
-            column_config={
-                "股數": st.column_config.NumberColumn(format="%.4f"),
-                "成本/股": st.column_config.NumberColumn(format="%.4f"),
-                "現價": st.column_config.NumberColumn(format="%.4f"),
-                "市值": st.column_config.NumberColumn(format="%.4f"),
-                "未實現損益": st.column_config.NumberColumn(format="%.4f"),
-                "回報率%": st.column_config.NumberColumn(format="%.2f%%"),
-                "連結": st.column_config.LinkColumn(label="連結", help="點我前往該標的頁面"),
-            },
-        )
+        st.dataframe(styled, use_container_width=True)
 
     # ---- 總計 ----
     pnl_unrealized = total_value - principal
@@ -359,7 +371,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         )
         st.caption(f"已實現損益：{total_realized:,.4f}")
 
-    # ---- 管理持股（刪除 / 賣出）----
+    # ---- 管理持股（統一操作面板）----
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
         options = [
             f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}"
