@@ -62,7 +62,7 @@ def show(prefill_symbol: str | None = None) -> None:
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
         st.subheader(f"{name or ticker}（{ticker}）")
 
-        # ======= Top KPI：四欄（Treynor 在 Sharpe 右邊）=======
+        # === KPI（Treynor 在 Sharpe 右邊）===
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
@@ -77,18 +77,18 @@ def show(prefill_symbol: str | None = None) -> None:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
 
-        # ======= 單一摘要 =======
+        # === 精簡摘要（不顯示系統性/非系統性詞彙）===
         grades = {"Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
                   "Treynor": grade_treynor(stats.get("Treynor"))}
         crit, warn, _ = summarize(grades)
         if crit:
-            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 指標未達標，請審慎評估。")
+            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
         elif warn:
             st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
         else:
-            st.success("✅ 主要指標健康。")
+            st.success("✅ 指標狀態良好。")
 
-        # ======= 圖表 + 波動提示 =======
+        # === 圖表 ===
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
         madr = stats.get("MADR")
