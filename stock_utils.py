@@ -15,6 +15,12 @@ TICKER_NAME_MAP = {
     "006208": "富邦科技",
 }
 
+# ETF 清單（防止股票誤查）
+ETF_LIST = {"0050", "0056", "006208"}
+
+def is_etf(code):
+    return code in ETF_LIST
+
 def find_ticker_by_name(input_str):
     for t, name in TICKER_NAME_MAP.items():
         if input_str in name:
@@ -27,9 +33,6 @@ def fetch_price_data(code, start, end):
     except Exception:
         return None
 
-# -------------------------
-# 風險 / 報酬指標
-# -------------------------
 def calc_beta(prices_asset, prices_market):
     df = pd.concat([prices_asset, prices_market], axis=1).dropna()
     if df.empty:
@@ -55,9 +58,6 @@ def calc_sharpe(prices, rf):
     r = prices.pct_change().dropna()
     return ((r - rf / 252).mean() / r.std()) * np.sqrt(252) if r.std() != 0 else np.nan
 
-# -------------------------
-# 主指標計算（股票 / ETF 分流）
-# -------------------------
 def get_metrics(code, market_close, rf, start, end, is_etf=False):
     df = fetch_price_data(code, start, end)
     if df is None or df.empty:
@@ -67,7 +67,6 @@ def get_metrics(code, market_close, rf, start, end, is_etf=False):
     alpha = calc_alpha(df["Close"], market_close, rf)
     sharpe = calc_sharpe(df["Close"], rf)
 
-    # ETF：不計算財報型指標
     if is_etf:
         debt_equity = np.nan
         current_ratio = np.nan
@@ -90,7 +89,6 @@ def get_metrics(code, market_close, rf, start, end, is_etf=False):
         current_ratio = info.get("currentRatio", np.nan)
         roe = info.get("returnOnEquity", np.nan)
 
-    # 波動穩定度
     returns = df["Close"].pct_change().dropna()
     madr = np.median(np.abs(returns - returns.mean())) if not returns.empty else np.nan
 
