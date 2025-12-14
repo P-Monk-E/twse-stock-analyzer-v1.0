@@ -1,74 +1,130 @@
-# /mnt/data/portfolio_utils.py
+import math
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 import yfinance as yf
 import streamlit as st
 from portfolio_risk_utils import diversification_warning
 
-st.session_state["portfolio_risk_warning"] = diversification_warning(
-    portfolio_sharpe,
-    portfolio_treynor
-)
-
-def _normalize_tw_ticker(ticker: str):
+def _normalize_tw_ticker(ticker: str) -> list[str]:
     t = ticker.upper().strip()
-    # 若已帶交易所後綴，直接回傳
     if t.endswith((".TW", ".TWO")):
         return [t]
-    # 台股常見上市/上櫃嘗試
     return [f"{t}.TW", f"{t}.TWO"]
 
-def evaluate_portfolio(portfolio):
-    total_value = 0
-    total_cost = 0
-    detailed = []
-
-    for stock in portfolio:
+def _latest_close(symbol: str) -> Optional[float]:
+    for cand in _normalize_tw_ticker(symbol):
         try:
-            ticker = stock['ticker']
-            shares = stock['shares']
-            cost = stock['cost']
+            p = yf.Ticker(cand).fast_info.get("lastPrice")
+            if p:
+                return float(p)
+        except Exception:
+            pass
+        try:
+            hist = yf.Ticker(cand).history(period="1d")
+            if not hist.empty:
+                return float(hist["Close"].iloc[-1])
+        except Exception:
+            continue
+    return None
 
-            price = None
-            # 與 portfolio_page.get_latest_price 行為對齊：嘗試兩種後綴
-            for cand in _normalize_tw_ticker(ticker):
+def set_portfolio_risk_warning(sharpe: Optional[float], treynor: Optional[float]) -> None:
+    """
+    安全寫入 session 的警示字串；呼叫者可傳 None 表示無法估算。
+    """
+    st.session_state["portfolio_risk_warning"] = diversification_warning(
+        sharpe if sharpe is not None else None,
+        treynor if treynor is not None else None,
+    )
+
+def estimate_portfolio_risk(positions: List[Dict]) -> Tuple[Optional[float], Optional[float]]:
+    """
+    以近一年資料估算組合 Sharpe/Treynor：
+    - 權重 = 最新市值權重（不可取得則均權）
+    - 市場：^TWII
+    - rf：固定 1%（與頁面一致）
+    失敗回傳 (None, None)
+    """
+    try:
+        if not positions:
+            return None, None
+
+        # 準備權重
+        weights = []
+        symbols = []
+        for p in positions:
+            sym = str(p.get("symbol") or p.get("ticker"))
+            qty = float(p.get("qty") or p.get("shares") or 0)
+            if not sym or qty <= 0:
+                continue
+            px = _latest_close(sym)
+            mv = (px or 0.0) * qty
+            symbols.append(sym)
+            weights.append(mv)
+        if not symbols:
+            return None, None
+        w = np.array(weights, dtype=float)
+        if not np.isfinite(w).any() or w.sum() <= 0:
+            w = np.ones_like(w)
+        w = w / w.sum()
+
+        # 下載近一年價格
+        end = pd.Timestamp.today(tz="UTC").normalize()
+        start = end - pd.Timedelta(days=365)
+        px_map = {}
+        for i, sym in enumerate(symbols):
+            # 以 .TW 優先
+            hist = None
+            for cand in _normalize_tw_ticker(sym):
                 try:
-                    info = yf.Ticker(cand).fast_info
-                    price = info.get("lastPrice")
-                    if price:  # 取得即停
+                    h = yf.Ticker(cand).history(start=start, end=end)
+                    if not h.empty:
+                        hist = h
                         break
                 except Exception:
                     continue
+            if hist is None or hist.empty:
+                continue
+            px_map[sym] = hist["Close"].rename(sym)
 
-            if price is None:
-                raise ValueError("無法取得現價")
+        if not px_map:
+            return None, None
 
-            value = price * shares
-            profit = (price - cost) * shares
-            return_rate = ((price - cost) / cost) * 100 if cost != 0 else 0.0
+        prices = pd.concat(px_map.values(), axis=1).dropna(how="any")
+        if prices.empty:
+            return None, None
 
-            detailed.append({
-                'ticker': ticker,
-                'shares': shares,
-                'cost': cost,
-                'price': price,
-                'value': value,
-                'profit': profit,
-                'return': return_rate,
-            })
+        # 組合日報酬
+        rets = prices.pct_change().dropna()
+        port_ret = (rets * w).sum(axis=1)
 
-            total_value += value
-            total_cost += cost * shares
+        # 市場
+        mkt = yf.Ticker("^TWII").history(start=start, end=end)["Close"].pct_change().dropna()
+        df = pd.concat([port_ret, mkt], axis=1).dropna()
+        df.columns = ["p", "m"]
 
-        except Exception as e:
-            detailed.append({
-                'ticker': stock.get('ticker', '未知'),
-                'error': f"取得資料失敗：{e}"
-            })
+        if df.empty or df["p"].std() == 0:
+            return None, None
 
-    total_return = ((total_value - total_cost) / total_cost * 100) if total_cost != 0 else 0
+        rf = 0.01
+        sharpe = float(((df["p"] - rf / 252).mean() / df["p"].std()) * math.sqrt(252))
 
-    return {
-        'total_value': total_value,
-        'total_return': total_return,
-        'detailed': detailed
-    }
+        # Treynor：年化超額報酬除以 beta
+        # beta 用月資料較穩定
+        mon = df.resample("M").last()
+        if len(mon) < 6 or mon["m"].std() == 0:
+            treynor = None
+        else:
+            cov = float(np.cov(mon["p"], mon["m"])[0, 1])
+            var_m = float(np.var(mon["m"]))
+            beta = cov / var_m if var_m != 0 else np.nan
+            if not np.isfinite(beta) or abs(beta) < 1e-6:
+                treynor = None
+            else:
+                ann_ret = float(df["p"].mean()) * 252.0
+                treynor = (ann_ret - rf) / beta
 
+        return sharpe, (treynor if treynor is not None else None)
+    except Exception:
+        return None, None
