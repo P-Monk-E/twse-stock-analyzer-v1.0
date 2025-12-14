@@ -10,7 +10,6 @@ def grade_sharpe(x: float) -> Tuple[str, str]:
         return "⚠", "普通"
     return "✅", "優秀"
 
-
 def grade_treynor(x: float) -> Tuple[str, str]:
     if x is None:
         return "❓", "資料不足"
@@ -19,7 +18,6 @@ def grade_treynor(x: float) -> Tuple[str, str]:
     if x <= 2:
         return "⚠", "普通"
     return "✅", "優秀"
-
 
 def grade_debt_equity(x: float) -> Tuple[str, str]:
     if x is None:
@@ -30,7 +28,6 @@ def grade_debt_equity(x: float) -> Tuple[str, str]:
         return "⚠", "普通"
     return "❗", "債務過高風險"
 
-
 def grade_current_ratio(x: float) -> Tuple[str, str]:
     if x is None:
         return "❓", "資料不足"
@@ -39,7 +36,6 @@ def grade_current_ratio(x: float) -> Tuple[str, str]:
     if 1.25 <= x < 1.5 or 2.5 < x <= 3.0:
         return "⚠", "普通"
     return "❗", "短期償債風險"
-
 
 def grade_roe(x: float) -> Tuple[str, str]:
     if x is None:
@@ -50,13 +46,8 @@ def grade_roe(x: float) -> Tuple[str, str]:
         return "⚠", "普通"
     return "❗", "表現不佳"
 
-
 def has_any_critical(grades: dict) -> bool:
     """
-    grades = {
-        "Sharpe": ("❗", "..."),
-        "ROE": ("✅", "..."),
-        ...
-    }
+    grades = {"Sharpe": ("❗","..."), ...}
     """
     return any(v[0] == "❗" for v in grades.values())
