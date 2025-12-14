@@ -24,7 +24,7 @@ def show():
         return "✅" if (val >= thr if greater else val <= thr) else "❗"
 
     try:
-        stats = get_metrics(ticker, mkt, rf, start, end)
+        stats = get_metrics(ticker, mkt, rf, start, end, is_etf=True)
         if stats:
             st.write(f"📊 {stats['name']} ({ticker})")
 
@@ -41,4 +41,5 @@ def show():
         else:
             st.warning("查無 ETF 資料或資料不足。")
     except Exception as e:
+
         st.error(f"❌ 查詢 ETF 失敗：{e}")
