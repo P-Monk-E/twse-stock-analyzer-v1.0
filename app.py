@@ -1,13 +1,9 @@
-# =========================================
-# /mount/src/twse-stock-analyzer-v1.0/app.py
-# =========================================
 import streamlit as st
 import stocks_page
 import etf_page
 import portfolio_page
 
 PAGES = ["股票", "ETF", "庫存"]
-
 
 def main() -> None:
     st.sidebar.header("主選單")
@@ -23,7 +19,6 @@ def main() -> None:
         etf_page.show(prefill_symbol=q_symbol)
     else:
         portfolio_page.show(prefill_symbol=q_symbol)
-
 
 if __name__ == "__main__":
     main()
