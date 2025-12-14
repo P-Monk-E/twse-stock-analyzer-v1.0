@@ -10,6 +10,14 @@ import yfinance as yf
 
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
 from chart_utils import plot_candlestick_with_ma
+from risk_grading import (
+    grade_sharpe,
+    grade_treynor,
+    grade_debt_equity,
+    grade_current_ratio,
+    grade_roe,
+    has_any_critical,
+)
 
 def _sync_symbol_from_input() -> None:
     txt = (st.session_state.get("stock_symbol") or "").strip()
@@ -69,6 +77,35 @@ def show(prefill_symbol: str | None = None) -> None:
         v = stats.get("流動比率");   c2.write(f"**流動比率**：{v if pd.notna(v) else '—'} {_tag(v, 1.5, True)}")
         v = stats.get("ROE");       c3.write(f"**ROE**：{(v*100):.2f}% {_tag(v, 0.10, True)}" if pd.notna(v) else "**ROE**：— ❓")
 
+        grades = {}
+
+        g, _ = grade_sharpe(stats["Sharpe Ratio"])
+        grades["Sharpe"] = (g, "")
+        st.write(f"**Sharpe Ratio**：{stats['Sharpe Ratio']:.2f} {g}")
+
+        g, _ = grade_treynor(stats.get("Treynor"))
+        grades["Treynor"] = (g, "")
+        st.write(f"**Treynor Ratio**：{stats.get('Treynor', float('nan')):.2f} {g}")
+
+        v = stats["負債權益比"]
+        g, _ = grade_debt_equity(v)
+        grades["負債權益比"] = (g, "")
+        st.write(f"**負債權益比**：{v:.2f} {g}")
+
+        v = stats["流動比率"]
+        g, _ = grade_current_ratio(v)
+        grades["流動比率"] = (g, "")
+        st.write(f"**流動比率**：{v:.2f} {g}")
+
+        v = stats["ROE"]
+        g, _ = grade_roe(v)
+        grades["ROE"] = (g, "")
+        st.write(f"**ROE**：{v*100:.2f}% {g}")
+
+        if has_any_critical(grades):
+            st.warning("⚠ 系統警告：至少一項核心風險 / 財務指標未達標")
+
+        
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"MADR：{stats['MADR']:.4f}" if stats["MADR"] is not None else "MADR：—")
