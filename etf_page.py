@@ -7,15 +7,22 @@ from datetime import datetime, timedelta
 def show():
     st.header("📊 ETF 專區")
 
-    query_params = st.experimental_get_query_params()
-    symbol = query_params.get("symbol", [None])[0]
+    # ✅ 修改四：加在 text_input 之前
+    prefill = st.session_state.get("redirect_symbol", "")
+    user_input = st.text_input("輸入 ETF 名稱或代碼", value=prefill)
+    st.session_state["redirect_symbol"] = ""  # 清除導向參數
 
-    user_input = st.text_input("輸入 ETF 名稱或代碼", symbol or "").strip().upper()
+    # ✅ 修改二：加入跨頁導向股票的按鈕
+    if st.button("🟩 這是股票"):
+        st.session_state["redirect_symbol"] = user_input
+        st.session_state["page"] = "股票"
+        st.experimental_rerun()
+
     if not user_input:
         st.info("請輸入 ETF 名稱或代碼以查詢。")
         return
 
-    ticker = find_ticker_by_name(user_input)
+    ticker = find_ticker_by_name(user_input.strip().upper())
     end = datetime.today()
     start = end - timedelta(days=365 * 3)
     rf = 0.01
@@ -30,6 +37,7 @@ def show():
         stats = get_metrics(ticker, mkt, rf, start, end)
         if stats:
             st.write(f"📊 {stats['name']} ({ticker})")
+
             st.dataframe({
                 "Alpha": [f"{stats['Alpha']} {tag(stats['Alpha'],0)}"],
                 "Sharpe Ratio": [f"{stats['Sharpe Ratio']} {tag(stats['Sharpe Ratio'],1)}"],
