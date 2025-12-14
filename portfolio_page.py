@@ -297,6 +297,8 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     with c2:
         st.metric("總未實現損益", f"{pnl_unrealized:,.4f}", delta=f"{total_return_rate:.2f}%",
                   delta_color=("inverse" if pnl_unrealized < 0 else "normal"))
+        # >>> 新增「已實現損益」：保留你的版面配置，其餘不變
+        st.caption(f"已實現損益：{total_realized:,.4f}")
 
     # 管理持股（獨立面板，避免誤觸）
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
