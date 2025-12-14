@@ -4,12 +4,12 @@ from chart_utils import plot_candlestick_with_ma
 import yfinance as yf
 from datetime import datetime, timedelta
 
-def show():
+def show(prefill_symbol=None):
     st.header("📈 股票專區")
 
-    query_symbol = st.experimental_get_query_params().get("symbol", [""])[0]
-    default_input = query_symbol if query_symbol else ""
-    user_input = st.text_input("輸入股票名稱或代碼", default_input)
+    query_symbol = st.experimental_get_query_params().get("symbol", [None])[0]
+    default_symbol = query_symbol if query_symbol else prefill_symbol or ""
+    user_input = st.text_input("輸入股票名稱或代碼", value=default_symbol)
 
     if not user_input:
         st.info("請輸入股票名稱或代碼以查詢。")
@@ -21,18 +21,22 @@ def show():
     rf = 0.01
     mkt = yf.Ticker("^TWII").history(start=start, end=end)["Close"]
 
+    def tag(val, thr, greater=True):
+        if val is None:
+            return "❓"
+        return "✅" if (val >= thr if greater else val <= thr) else "❗"
+
     try:
         stats = get_metrics(ticker, mkt, rf, start, end)
         if stats:
             st.write(f"📊 {stats['name']} ({ticker})")
-            st.dataframe({
-                "流動比率": [f"{stats['流動比率']}"],
-                "ROE": [f"{stats['ROE']}"],
-                "Alpha": [f"{stats['Alpha']}"],
-                "Sharpe Ratio": [f"{stats['Sharpe Ratio']}"],
-                "Beta": [stats['Beta']],
-                "MADR": [f"{stats['MADR']}"],
-            })
+
+            st.markdown(f"**流動比率:** {stats['流動比率']} {tag(stats['流動比率'],1.25)}")
+            st.markdown(f"**ROE:** {stats['ROE']} {tag(stats['ROE'],0.08)}")
+            st.markdown(f"**Alpha:** {stats['Alpha']} {tag(stats['Alpha'],0)}")
+            st.markdown(f"**Sharpe Ratio:** {stats['Sharpe Ratio']} {tag(stats['Sharpe Ratio'],1)}")
+            st.markdown(f"**Beta:** {stats['Beta']}")
+            st.markdown(f"**MADR:** {stats['MADR']}")
 
             df = stats["df"]
             fig = plot_candlestick_with_ma(df, title=f"{stats['name']} ({ticker}) 技術圖")
