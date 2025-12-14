@@ -1,6 +1,4 @@
-# =========================================
 # /mount/src/twse-stock-analyzer-v1.0/portfolio_page.py
-# =========================================
 import json
 import os
 from datetime import date
@@ -9,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+import altair as alt  # ← 改用 Altair（免安裝）
 
 SAVE_PATH = "portfolio.json"
 REALIZED_PATH = "realized_trades.json"  # 已實現交易紀錄
@@ -164,7 +163,6 @@ def _fifo_sell(symbol: str, sell_qty: int, sell_date: date, sell_price: float) -
     if sell_price <= 0:
         st.warning("請輸入正確的賣出價格。"); return
 
-    # 依買入日升冪（FIFO）；沒有日期的排最後
     def _key(t):
         d = t[1].get("buy_date") or ""
         try:
@@ -201,7 +199,6 @@ def _fifo_sell(symbol: str, sell_qty: int, sell_date: date, sell_price: float) -
         )
         remaining -= take
 
-    # 刪除 qty==0 的批次
     st.session_state.portfolio = [r for r in data if int(r.get("qty", 0)) > 0]
     _save_portfolio()
 
@@ -301,7 +298,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         st.metric("已實現損益", f"{total_realized:,.4f}")
         return
 
-    # 主表（數值型 → Styler 套色與格式）
+    # 主表
     rows: List[Dict[str, Any]] = []
     principal = 0.0
     total_value = 0.0
@@ -340,8 +337,8 @@ def show(prefill_symbol: Optional[str] = None) -> None:
 
     def _pos_neg_color(v: Any) -> str:
         if isinstance(v, (int, float)) and pd.notna(v):
-            if v > 0: return "color:green;"
-            if v < 0: return "color:red;"
+            if v > 0: return "color:red;"
+            if v < 0: return "color:green;"
         return ""
 
     styled = (
@@ -362,7 +359,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     )
     st.dataframe(styled, use_container_width=True)
 
-    # 連結清單（保持可點）
+    # 連結清單
     st.caption("快速前往：")
     link_df = pd.DataFrame(links)
     st.data_editor(
@@ -373,9 +370,8 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         hide_index=True,
     )
 
-    # ===== 新增：資產配置圓餅圖（依總市值比例） =====
+    # ===== 資產配置圓餅圖（Altair 版） =====
     st.subheader("資產配置（市值占比）", anchor=False)
-    # 聚合各代碼市值
     alloc = (
         df[["代碼", "市值"]]
         .copy()
@@ -387,22 +383,23 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     total_mv = alloc["市值"].sum() if not alloc.empty else 0.0
     if total_mv > 0:
         alloc["占比%"] = alloc["市值"] / total_mv * 100.0
+        # 額外字串欄位用於 tooltip（千分位 4 位、小數 % 2 位）
+        alloc["市值(千分位)"] = alloc["市值"].apply(lambda v: f"{v:,.4f}")
+        alloc["占比(%)"] = alloc["占比%"].apply(lambda v: f"{v:.2f}%")
 
-        # 圓餅圖
-        import matplotlib.pyplot as plt
-
-        fig, ax = plt.subplots()
-        ax.pie(
-            alloc["市值"].values,
-            labels=alloc["代碼"].astype(str).values,
-            autopct="%1.1f%%",
-            startangle=90,
+        pie = alt.Chart(alloc).mark_arc(outerRadius=120).encode(
+            theta=alt.Theta(field="市值", type="quantitative"),
+            color=alt.Color(field="代碼", type="nominal", legend=None),
+            tooltip=["代碼:N", "市值(千分位):N", "占比(%):N"],
         )
-        ax.axis("equal")  # why: 讓圓形不變形
-        st.pyplot(fig, use_container_width=True)
+        labels = alt.Chart(alloc).mark_text(radius=145, size=12).encode(
+            text="代碼:N",
+            theta=alt.Theta(field="市值", type="quantitative"),
+            color=alt.value("#333"),
+        )
+        st.altair_chart(pie + labels, use_container_width=True)
 
-        # 配置表（數字格式：市值4位、占比2位）
-        alloc_display = alloc.copy()
+        alloc_display = alloc[["代碼", "市值", "占比%"]].copy()
         alloc_display["市值"] = alloc_display["市值"].apply(lambda v: f"{v:,.4f}")
         alloc_display["占比%"] = alloc_display["占比%"].apply(lambda v: f"{v:.2f}%")
         st.dataframe(alloc_display, use_container_width=True, hide_index=True)
