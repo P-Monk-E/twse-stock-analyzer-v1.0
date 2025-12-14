@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 import math
 from datetime import datetime, timedelta
 from typing import Optional
-
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -11,6 +9,7 @@ import yfinance as yf
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
 from chart_utils import plot_candlestick_with_ma
 from risk_grading import (
+    grade_alpha,
     grade_sharpe,
     grade_treynor,
     grade_debt_equity,
@@ -69,7 +68,6 @@ def show(prefill_symbol: str | None = None) -> None:
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
         st.subheader(f"{name or ticker}（{ticker}）")
 
-        # === KPI（Treynor 在 Sharpe 右邊）===
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
@@ -84,8 +82,9 @@ def show(prefill_symbol: str | None = None) -> None:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
 
-        # === 精簡風險摘要：不顯示系統性/非系統性詞彙 ===
+        # === 精簡風險摘要（加入 Alpha） ===
         grades = {}
+        grades["Alpha"] = grade_alpha(stats.get("Alpha"))
         grades["Sharpe"] = grade_sharpe(stats.get("Sharpe Ratio"))
         grades["Treynor"] = grade_treynor(stats.get("Treynor"))
         v_de = stats.get("負債權益比"); grades["負債權益比"] = grade_debt_equity(v_de if pd.notna(v_de) else None)
@@ -100,7 +99,6 @@ def show(prefill_symbol: str | None = None) -> None:
         else:
             st.success("✅ 指標狀態良好。")
 
-        # === 財務比率：單行精簡 ===
         def _icon(name: str) -> str:
             return grades[name][0]
         roe_txt = f"{(v_roe*100):.2f}%" if (v_roe is not None and pd.notna(v_roe)) else "—"
@@ -111,7 +109,6 @@ def show(prefill_symbol: str | None = None) -> None:
         )
         st.markdown(line)
 
-        # === 圖表 ===
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
         madr = stats.get("MADR")
