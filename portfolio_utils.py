@@ -1,4 +1,13 @@
+# /mnt/data/portfolio_utils.py
 import yfinance as yf
+
+def _normalize_tw_ticker(ticker: str):
+    t = ticker.upper().strip()
+    # 若已帶交易所後綴，直接回傳
+    if t.endswith((".TW", ".TWO")):
+        return [t]
+    # 台股常見上市/上櫃嘗試
+    return [f"{t}.TW", f"{t}.TWO"]
 
 def evaluate_portfolio(portfolio):
     total_value = 0
@@ -11,16 +20,23 @@ def evaluate_portfolio(portfolio):
             shares = stock['shares']
             cost = stock['cost']
 
-            # 直接用現價抓取，避免 history 出錯
-            info = yf.Ticker(ticker).fast_info
-            price = info.get("lastPrice")
+            price = None
+            # 與 portfolio_page.get_latest_price 行為對齊：嘗試兩種後綴
+            for cand in _normalize_tw_ticker(ticker):
+                try:
+                    info = yf.Ticker(cand).fast_info
+                    price = info.get("lastPrice")
+                    if price:  # 取得即停
+                        break
+                except Exception:
+                    continue
 
             if price is None:
                 raise ValueError("無法取得現價")
 
             value = price * shares
             profit = (price - cost) * shares
-            return_rate = ((price - cost) / cost) * 100
+            return_rate = ((price - cost) / cost) * 100 if cost != 0 else 0.0
 
             detailed.append({
                 'ticker': ticker,
