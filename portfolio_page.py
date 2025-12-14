@@ -3,6 +3,7 @@ import yfinance as yf
 import json
 import os
 from datetime import date
+from stock_utils import TICKER_NAME_MAP, ETF_LIST
 
 SAVE_PATH = "portfolio.json"
 
@@ -31,9 +32,14 @@ def load_portfolio():
         except Exception:
             st.session_state.portfolio = []
 
+def is_etf(symbol: str):
+    """判斷是否為 ETF（來自 ETF_LIST）"""
+    return symbol in ETF_LIST
+
 def show():
     st.header("📦 庫存")
 
+    # 初次載入 portfolio
     if "portfolio" not in st.session_state:
         st.session_state.portfolio = []
         load_portfolio()
@@ -86,29 +92,41 @@ def show():
     total_realized = 0
 
     for idx, stock in enumerate(st.session_state.portfolio):
+        ticker = stock["ticker"]
+        stock_name = TICKER_NAME_MAP.get(ticker, "")
         total_value += stock["value"]
         total_capital += stock["capital"]
         unrealized = stock["value"] - stock["capital"]
         total_unrealized += unrealized
         total_realized += stock.get("realized_profit", 0.0)
 
-        col1, col2 = st.columns([6,1])
+        # ➤ 顯示按鈕取代超連結
+        col1, col2 = st.columns([7, 1])
         with col1:
-            warn = " ⚠️" if stock["return"] < 0 else ""
-            target_page = "股票" if stock["ticker"].isdigit() else "ETF"
-            st.markdown(
-                f"**[{stock['ticker']}（{stock['shares']}股）](/?page={target_page}&symbol={stock['ticker']})**｜成本 {stock['cost']}｜現價 {stock['price']}｜市值 {stock['value']}｜報酬率 {stock['return']}%{warn}"
+            # 按鈕文字
+            btn_label = f"{ticker} {stock_name}｜現價 {stock['price']}｜股數 {stock['shares']}｜市值 {stock['value']}｜報酬率 {stock['return']}%"
+            if st.button(btn_label, key=f"btn_{idx}"):
+                # 設定導向資料
+                st.session_state["redirect_symbol"] = ticker
+                # 判斷要去 ETF 還是 股票
+                st.session_state["page"] = "ETF" if is_etf(ticker) else "股票"
+                st.rerun()
+
+            st.caption(
+                f"購買日：{stock['buy_date']}｜買入成本：{stock['capital']} 元｜未實現損益：{round(unrealized,2)} 元"
             )
-            st.caption(f"購買日：{stock['buy_date']}｜未實現損益：{round(unrealized, 2)} 元")
 
         with col2:
+            # 刪除按鈕
             if st.button("🗑️", key=f"del_{idx}"):
                 st.session_state.portfolio.pop(idx)
                 save_portfolio()
                 st.rerun()
 
     st.divider()
+
     total_return = ((total_value - total_capital) / total_capital * 100) if total_capital > 0 else 0
+
     st.markdown(f"🔥 **總市值：{round(total_value,2)}**")
     st.markdown(f"💵 **總投入資金：{round(total_capital,2)}**")
     st.markdown(f"📉 **總報酬率：{round(total_return,2)}%**")
