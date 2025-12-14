@@ -1,10 +1,12 @@
 # /mnt/data/app.py
 import streamlit as st
 
+# 移除 recommend_page 匯入
 import stocks_page
 import etf_page
 import portfolio_page
 
+# 移除「推薦」頁籤
 PAGES = ["股票", "ETF", "庫存"]
 
 def _get_current_page() -> str:
@@ -13,11 +15,13 @@ def _get_current_page() -> str:
 
 def _on_nav_change():
     st.query_params["page"] = st.session_state["nav_page"]
+    # 切到非 股票/ETF 時清除 symbol，避免殘留
     if st.session_state["nav_page"] not in ("股票", "ETF") and "symbol" in st.query_params:
         del st.query_params["symbol"]
 
 def main():
     st.set_page_config(page_title="投資儀表板", layout="wide")
+
     st.sidebar.title("主選單")
 
     current_page = _get_current_page()
