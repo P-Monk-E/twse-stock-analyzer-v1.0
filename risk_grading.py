@@ -1,6 +1,11 @@
 from typing import Dict, Tuple
 
-# 回傳 (符號, 說明)
+def grade_alpha(x: float) -> Tuple[str, str]:
+    # Alpha 年化為正代表超額報酬；單檔判讀採簡單門檻
+    if x is None:
+        return "❓", "資料不足"
+    return ("✅", "優秀") if x > 0 else ("❗", "未達標")
+
 def grade_sharpe(x: float) -> Tuple[str, str]:
     if x is None:
         return "❓", "資料不足"
