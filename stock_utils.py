@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import re
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import statsmodels.api as sm
 
+# -------------------------
+# 基本設定 / 名稱映射
+# -------------------------
 TICKER_NAME_MAP = {
     "2330": "台積電",
     "2454": "聯發科",
@@ -15,19 +20,12 @@ TICKER_NAME_MAP = {
     "0050": "元大台灣50",
     "0056": "元大高股息",
     "006208": "富邦科技",
-    # 可擴充其他代碼
 }
 
-ETF_LIST = {"0050", "0056", "006208"}  # 額外白名單
-
+ETF_LIST = {"0050", "0056", "006208"}  # 額外白名單；仍支援 00xxxx 模式
 _ETF_REGEX = re.compile(r"^00[0-9]{2,4}[A-Z]?$", re.IGNORECASE)
 
 def is_etf(code: str) -> bool:
-    """
-    強化版 ETF 判斷：
-    - 白名單直接 True
-    - 任何以 00 開頭的台股代碼（含尾碼 A/B 等）視為 ETF，例如 00929、00940、00980A
-    """
     if not code:
         return False
     c = str(code).strip().upper()
@@ -48,7 +46,130 @@ def fetch_price_data(code: str, start, end) -> pd.DataFrame | None:
     except Exception:
         return None
 
-# ====== 風險 / 績效計算（原有內容保持） ======
+# -------------------------
+# 財報抓取（健壯版）
+# -------------------------
+
+def _first_non_nan(values: pd.Series | pd.Index | list) -> Optional[float]:
+    """回傳序列中第一個非 NaN 數字，否則 None。"""
+    try:
+        s = pd.Series(values, dtype="float64")
+        s = s.dropna()
+        return float(s.iloc[0]) if not s.empty else None
+    except Exception:
+        # 有些是 object，需要再嘗試轉型
+        try:
+            s = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+            return float(s.iloc[0]) if not s.empty else None
+        except Exception:
+            return None
+
+def _find_row(df: pd.DataFrame, patterns: list[str]) -> Optional[str]:
+    """在 df.index 以不分大小寫 '包含' 比對；傳回第一個命中列名。"""
+    if df is None or df.empty:
+        return None
+    idx_lower = {str(i).lower(): i for i in df.index}
+    for p in patterns:
+        p = p.lower()
+        for low, original in idx_lower.items():
+            if p in low:
+                return original
+    return None
+
+def _get_financial_ratios(code: str) -> tuple[float, float, float]:
+    """
+    回傳 (debt_equity, current_ratio, roe)
+    不可得用 np.nan；盡量容忍多種欄位命名與年/季報差異。
+    """
+    debt_equity = np.nan
+    current_ratio = np.nan
+    roe = np.nan
+
+    try:
+        t = yf.Ticker(f"{code}.TW")
+        # 依序嘗試：年報 -> 季報
+        bs_list = [t.balance_sheet, t.quarterly_balance_sheet]
+        fs_list = [t.financials, t.quarterly_financials]
+
+        # 先從任一存在的 balance sheet 裡找需要的列
+        bs = next((x for x in bs_list if x is not None and not x.empty), None)
+        fs = next((x for x in fs_list if x is not None and not x.empty), None)
+
+        # 若兩者皆無，直接返回 NaN
+        if bs is None and fs is None:
+            return debt_equity, current_ratio, roe
+
+        # --- Equity / Liabilities / Current ---
+        # 允許多種別名（Yahoo! 可能更名）
+        row_equity = _find_row(bs, [
+            "total stockholder equity",
+            "total shareholders equity",
+            "total equity gross minority interest",
+            "total equity",
+        ]) if bs is not None else None
+
+        row_assets = _find_row(bs, ["total assets"]) if bs is not None else None
+        row_liab   = _find_row(bs, ["total liab", "total liabilities"]) if bs is not None else None
+
+        row_cur_assets = _find_row(bs, ["total current assets", "current assets"]) if bs is not None else None
+        row_cur_liab   = _find_row(bs, ["total current liabilities", "current liabilities", "current liab"]) if bs is not None else None
+
+        # 取各列最新一期的值
+        def _row_value(df: pd.DataFrame, row_name: Optional[str]) -> Optional[float]:
+            if df is None or row_name is None:
+                return None
+            try:
+                # yfinance 的列為 index、欄位為各期；抓第一個非 NaN 值
+                return _first_non_nan(df.loc[row_name].values)
+            except Exception:
+                return None
+
+        v_equity = _row_value(bs, row_equity)
+        v_assets = _row_value(bs, row_assets)
+        v_liab   = _row_value(bs, row_liab)
+        v_cur_a  = _row_value(bs, row_cur_assets)
+        v_cur_l  = _row_value(bs, row_cur_liab)
+
+        # 若股東權益找不到，嘗試用 資產 - 負債 估
+        if v_equity is None and (v_assets is not None and v_liab is not None):
+            v_equity = float(v_assets) - float(v_liab)
+
+        # Debt/Equity
+        if v_liab is not None and v_equity is not None and v_equity != 0 and np.isfinite(v_equity):
+            debt_equity = float(v_liab) / float(v_equity)
+
+        # Current Ratio
+        if v_cur_a is not None and v_cur_l is not None and v_cur_l != 0 and np.isfinite(v_cur_l):
+            current_ratio = float(v_cur_a) / float(v_cur_l)
+
+        # --- Net Income（income statement）---
+        row_net_income = None
+        if fs is not None:
+            row_net_income = _find_row(fs, [
+                "net income common stockholders",
+                "net income applicable to common shares",
+                "net income",
+                "net income from continuing operations",
+            ])
+        v_net_income = None
+        if fs is not None and row_net_income is not None:
+            try:
+                v_net_income = _first_non_nan(fs.loc[row_net_income].values)
+            except Exception:
+                v_net_income = None
+
+        if v_net_income is not None and v_equity is not None and v_equity != 0 and np.isfinite(v_equity):
+            roe = float(v_net_income) / float(v_equity)
+
+    except Exception:
+        # 抓不到資料即保留 NaN
+        pass
+
+    return debt_equity, current_ratio, roe
+
+# -------------------------
+# 風險 / 績效計算
+# -------------------------
 def _calc_beta(asset: pd.Series, market: pd.Series) -> float:
     df = pd.concat([asset, market], axis=1).dropna()
     if df.empty:
@@ -91,6 +212,9 @@ def _calc_madr(prices: pd.Series) -> float:
         return np.nan
     return float(np.abs(r).mean())
 
+# -------------------------
+# 主函數
+# -------------------------
 def get_metrics(code: str, market_close: pd.Series, rf: float, start, end, is_etf: bool = False):
     df = fetch_price_data(code, start, end)
     if df is None or df.empty:
@@ -104,32 +228,13 @@ def get_metrics(code: str, market_close: pd.Series, rf: float, start, end, is_et
     treynor = _calc_treynor(close, rf, beta)
     madr = _calc_madr(close)
 
-    debt_equity = np.nan
-    current_ratio = np.nan
-    roe = np.nan
-
+    # —— 核心修復：以健壯抓法取得三個財務比率（僅個股需要） ——
     if not is_etf:
-        try:
-            t = yf.Ticker(f"{code}.TW")
-            bs = t.balance_sheet
-            fs = t.financials
-
-            equity = np.nan
-            if not bs.empty:
-                total_assets = bs.loc["Total Assets"].iloc[0]
-                total_liab = bs.loc["Total Liab"].iloc[0]
-                current_assets = bs.loc.get("Total Current Assets", [np.nan])[0]
-                current_liab = bs.loc.get("Total Current Liabilities", [np.nan])[0]
-                equity = total_assets - total_liab
-                if np.isfinite(equity) and equity != 0:
-                    debt_equity = total_liab / equity
-                if np.isfinite(current_liab) and current_liab != 0:
-                    current_ratio = current_assets / current_liab
-            if not fs.empty and np.isfinite(equity) and equity != 0:
-                net_income = fs.loc["Net Income"].iloc[0]
-                roe = net_income / equity
-        except Exception:
-            pass
+        debt_equity, current_ratio, roe = _get_financial_ratios(code)
+    else:
+        debt_equity = np.nan
+        current_ratio = np.nan
+        roe = np.nan
 
     warnings = {
         "負債權益比": bool(debt_equity <= 1.0) if pd.notna(debt_equity) else False,
