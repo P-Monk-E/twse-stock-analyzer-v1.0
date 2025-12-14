@@ -1,9 +1,8 @@
-# /mnt/data/chart_utils.py
 import plotly.graph_objects as go
 
 def plot_candlestick_with_ma(df, title=""):
     """
-    為避免上游 df 被就地修改（可能影響後續邏輯或快取），先複製一份。
+    輕量技術圖：K 線 + MA5/10/20；不就地改動原 df。
     """
     df = df.copy()
     df["MA5"] = df["Close"].rolling(5).mean()
