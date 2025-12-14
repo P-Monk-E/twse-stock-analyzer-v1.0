@@ -1,5 +1,12 @@
 # /mnt/data/portfolio_utils.py
 import yfinance as yf
+import streamlit as st
+from portfolio_risk_utils import diversification_warning
+
+st.session_state["portfolio_risk_warning"] = diversification_warning(
+    portfolio_sharpe,
+    portfolio_treynor
+)
 
 def _normalize_tw_ticker(ticker: str):
     t = ticker.upper().strip()
@@ -64,3 +71,4 @@ def evaluate_portfolio(portfolio):
         'total_return': total_return,
         'detailed': detailed
     }
+
