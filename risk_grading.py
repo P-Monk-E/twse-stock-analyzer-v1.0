@@ -1,5 +1,6 @@
 from typing import Tuple
 
+# 回傳 (符號, 說明)
 def grade_sharpe(x: float) -> Tuple[str, str]:
     if x is None:
         return "❓", "資料不足"
@@ -48,3 +49,14 @@ def grade_roe(x: float) -> Tuple[str, str]:
     if x >= 0.05:
         return "⚠", "普通"
     return "❗", "表現不佳"
+
+
+def has_any_critical(grades: dict) -> bool:
+    """
+    grades = {
+        "Sharpe": ("❗", "..."),
+        "ROE": ("✅", "..."),
+        ...
+    }
+    """
+    return any(v[0] == "❗" for v in grades.values())
