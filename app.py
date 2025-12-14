@@ -5,20 +5,28 @@ import stocks_page
 import etf_page
 import portfolio_page
 
-st.sidebar.title("主選單")
+st.sidebar.title("選擇頁面")
 
-# ✅ 修改三：確保頁面能切換與重新導向
+# 🔑 統一用 session_state 控制頁面
 if "page" not in st.session_state:
     st.session_state["page"] = "推薦"
 
-selected_page = st.sidebar.radio("選擇頁面", ["推薦", "股票", "ETF", "庫存"], index=["推薦", "股票", "ETF", "庫存"].index(st.session_state["page"]))
+pages = ["推薦", "股票", "ETF", "庫存"]
+current_index = pages.index(st.session_state["page"])
+
+selected_page = st.sidebar.radio(
+    "主選單",
+    pages,
+    index=current_index
+)
+
 st.session_state["page"] = selected_page
 
-if st.session_state["page"] == "推薦":
+if selected_page == "推薦":
     recommend_page.show()
-elif st.session_state["page"] == "股票":
+elif selected_page == "股票":
     stocks_page.show()
-elif st.session_state["page"] == "ETF":
+elif selected_page == "ETF":
     etf_page.show()
-elif st.session_state["page"] == "庫存":
+elif selected_page == "庫存":
     portfolio_page.show()
