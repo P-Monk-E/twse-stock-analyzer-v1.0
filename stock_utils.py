@@ -1,13 +1,10 @@
 from __future__ import annotations
 
+import re
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import statsmodels.api as sm
-
-# =========================
-# 基本設定
-# =========================
 
 TICKER_NAME_MAP = {
     "2330": "台積電",
@@ -18,16 +15,23 @@ TICKER_NAME_MAP = {
     "0050": "元大台灣50",
     "0056": "元大高股息",
     "006208": "富邦科技",
+    # 可擴充其他代碼
 }
 
-ETF_LIST = {"0050", "0056", "006208"}
+ETF_LIST = {"0050", "0056", "006208"}  # 額外白名單
 
-# =========================
-# 工具函數
-# =========================
+_ETF_REGEX = re.compile(r"^00[0-9]{2,4}[A-Z]?$", re.IGNORECASE)
 
 def is_etf(code: str) -> bool:
-    return code in ETF_LIST
+    """
+    強化版 ETF 判斷：
+    - 白名單直接 True
+    - 任何以 00 開頭的台股代碼（含尾碼 A/B 等）視為 ETF，例如 00929、00940、00980A
+    """
+    if not code:
+        return False
+    c = str(code).strip().upper()
+    return (c in ETF_LIST) or bool(_ETF_REGEX.match(c))
 
 def find_ticker_by_name(input_str: str) -> str:
     s = str(input_str).strip().upper()
@@ -36,7 +40,7 @@ def find_ticker_by_name(input_str: str) -> str:
     for t, name in TICKER_NAME_MAP.items():
         if s in name or s in name.upper():
             return t
-    return s
+    return s  # 回傳原字串（可能已是代碼）
 
 def fetch_price_data(code: str, start, end) -> pd.DataFrame | None:
     try:
@@ -44,10 +48,7 @@ def fetch_price_data(code: str, start, end) -> pd.DataFrame | None:
     except Exception:
         return None
 
-# =========================
-# 風險 / 績效計算
-# =========================
-
+# ====== 風險 / 績效計算（原有內容保持） ======
 def _calc_beta(asset: pd.Series, market: pd.Series) -> float:
     df = pd.concat([asset, market], axis=1).dropna()
     if df.empty:
@@ -76,9 +77,6 @@ def _calc_sharpe(prices: pd.Series, rf: float) -> float:
     return ((r - rf / 252).mean() / r.std()) * np.sqrt(252)
 
 def _calc_treynor(prices: pd.Series, rf: float, beta: float) -> float:
-    """
-    Treynor = (年化報酬 - rf) / beta；beta ~ 0 時回傳 NaN 避免爆衝。
-    """
     if beta is None or not np.isfinite(beta) or abs(beta) < 1e-6:
         return np.nan
     r = prices.pct_change().dropna()
@@ -88,17 +86,10 @@ def _calc_treynor(prices: pd.Series, rf: float, beta: float) -> float:
     return (ann_return - rf) / beta
 
 def _calc_madr(prices: pd.Series) -> float:
-    """
-    MADR(Mean Absolute Daily Return)：|日報酬| 的平均，用於衡量日內波動感受。
-    """
     r = prices.pct_change().dropna()
     if r.empty:
         return np.nan
     return float(np.abs(r).mean())
-
-# =========================
-# 主函數：指標 + 警告
-# =========================
 
 def get_metrics(code: str, market_close: pd.Series, rf: float, start, end, is_etf: bool = False):
     df = fetch_price_data(code, start, end)
@@ -138,13 +129,12 @@ def get_metrics(code: str, market_close: pd.Series, rf: float, start, end, is_et
                 net_income = fs.loc["Net Income"].iloc[0]
                 roe = net_income / equity
         except Exception:
-            pass  # 無法取到財報時以 NaN 呈現
+            pass
 
     warnings = {
         "負債權益比": bool(debt_equity <= 1.0) if pd.notna(debt_equity) else False,
         "流動比率": bool(current_ratio >= 1.5) if pd.notna(current_ratio) else False,
         "ROE": bool(roe >= 0.15) if pd.notna(roe) else False,
-        # 可依需求再擴充：如 MADR > 某閾值判高波動等
     }
 
     return {
