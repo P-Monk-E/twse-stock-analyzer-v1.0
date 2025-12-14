@@ -29,13 +29,21 @@ def _latest_close(symbol: str) -> Optional[float]:
             continue
     return None
 
-def set_portfolio_risk_warning(sharpe: Optional[float], treynor: Optional[float]) -> None:
+def set_portfolio_risk_warning(
+    sharpe: Optional[float],
+    treynor: Optional[float],
+    *,
+    non_sys_thr: float = 0.5,
+    sys_thr: float = 0.5,
+) -> None:
     """
-    安全寫入 session 的警示字串；呼叫者可傳 None 表示無法估算。
+    為與頁面滑桿一致，此函式接受門檻並將訊息寫入 session_state。
     """
     st.session_state["portfolio_risk_warning"] = diversification_warning(
         sharpe if sharpe is not None else None,
         treynor if treynor is not None else None,
+        non_sys_thr=non_sys_thr,
+        sys_thr=sys_thr,
     )
 
 def estimate_portfolio_risk(positions: List[Dict]) -> Tuple[Optional[float], Optional[float]]:
@@ -43,14 +51,13 @@ def estimate_portfolio_risk(positions: List[Dict]) -> Tuple[Optional[float], Opt
     以近一年資料估算組合 Sharpe/Treynor：
     - 權重 = 最新市值權重（不可取得則均權）
     - 市場：^TWII
-    - rf：固定 1%（與頁面一致）
+    - rf：固定 1%
     失敗回傳 (None, None)
     """
     try:
         if not positions:
             return None, None
 
-        # 準備權重
         weights = []
         symbols = []
         for p in positions:
@@ -69,12 +76,10 @@ def estimate_portfolio_risk(positions: List[Dict]) -> Tuple[Optional[float], Opt
             w = np.ones_like(w)
         w = w / w.sum()
 
-        # 下載近一年價格
         end = pd.Timestamp.today(tz="UTC").normalize()
         start = end - pd.Timedelta(days=365)
         px_map = {}
-        for i, sym in enumerate(symbols):
-            # 以 .TW 優先
+        for sym in symbols:
             hist = None
             for cand in _normalize_tw_ticker(sym):
                 try:
@@ -95,11 +100,9 @@ def estimate_portfolio_risk(positions: List[Dict]) -> Tuple[Optional[float], Opt
         if prices.empty:
             return None, None
 
-        # 組合日報酬
         rets = prices.pct_change().dropna()
         port_ret = (rets * w).sum(axis=1)
 
-        # 市場
         mkt = yf.Ticker("^TWII").history(start=start, end=end)["Close"].pct_change().dropna()
         df = pd.concat([port_ret, mkt], axis=1).dropna()
         df.columns = ["p", "m"]
@@ -110,8 +113,6 @@ def estimate_portfolio_risk(positions: List[Dict]) -> Tuple[Optional[float], Opt
         rf = 0.01
         sharpe = float(((df["p"] - rf / 252).mean() / df["p"].std()) * math.sqrt(252))
 
-        # Treynor：年化超額報酬除以 beta
-        # beta 用月資料較穩定
         mon = df.resample("M").last()
         if len(mon) < 6 or mon["m"].std() == 0:
             treynor = None
