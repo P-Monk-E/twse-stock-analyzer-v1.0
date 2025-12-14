@@ -1,35 +1,4 @@
 # =========================================
-# /mount/src/twse-stock-analyzer-v1.0/app.py
-# =========================================
-import streamlit as st
-import stocks_page
-import etf_page
-import portfolio_page
-
-PAGES = ["股票", "ETF", "庫存"]
-
-
-def main() -> None:
-    st.sidebar.header("主選單")
-    nav_param = st.query_params.get("nav")
-    default_index = PAGES.index(nav_param) if nav_param in PAGES else 0
-
-    nav = st.sidebar.radio("選擇頁面", PAGES, index=default_index, key="nav_page")
-    q_symbol = st.query_params.get("symbol")
-
-    if nav == "股票":
-        stocks_page.show(prefill_symbol=q_symbol)
-    elif nav == "ETF":
-        etf_page.show(prefill_symbol=q_symbol)
-    else:
-        portfolio_page.show(prefill_symbol=q_symbol)
-
-
-if __name__ == "__main__":
-    main()
-
-
-# =========================================
 # /mount/src/twse-stock-analyzer-v1.0/portfolio_page.py
 # =========================================
 import json
@@ -43,6 +12,32 @@ import yfinance as yf
 
 SAVE_PATH = "portfolio.json"
 REALIZED_PATH = "realized_trades.json"  # 賣出紀錄（已實現損益）
+
+
+# ------------------------- Helpers: format -------------------------
+def fmt4(x: Optional[float]) -> str:
+    """數字到小數 4 位 + 千分位；None/NaN → '—'"""
+    try:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return "—"
+        return f"{float(x):,.4f}"
+    except Exception:
+        return "—"
+
+
+def fmtpct2(x: Optional[float]) -> str:
+    """百分比到小數 2 位；None/NaN → '—'"""
+    try:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return "—"
+        return f"{float(x):.2f}%"
+    except Exception:
+        return "—"
+
+
+def guess_is_etf(symbol: str) -> bool:
+    # 台灣多數 ETF 為 00xxx；簡易判斷即可導向正確頁面
+    return symbol.strip().upper().startswith("00")
 
 
 # ------------------------- Storage -------------------------
@@ -92,7 +87,7 @@ def _append_realized(rec: Dict[str, Any]) -> None:
         st.warning(f"寫入 {REALIZED_PATH} 失敗：{e}")
 
 
-# ------------------------- Quote / Helpers -------------------------
+# ------------------------- Quote -------------------------
 @st.cache_data(ttl=3600)
 def get_latest_price(symbol: str) -> Optional[float]:
     s = symbol.upper().strip()
@@ -111,10 +106,6 @@ def get_latest_price(symbol: str) -> Optional[float]:
         except Exception:
             continue
     return None
-
-
-def guess_is_etf(symbol: str) -> bool:
-    return symbol.strip().upper().startswith("00")  # why: 台灣 ETF 多為 00xxx
 
 
 # ------------------------- Actions -------------------------
@@ -162,7 +153,7 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
         {"date": sell_date.isoformat(), "qty": int(sell_qty), "price": float(sell_price)}
     )
     if pos["qty"] == 0:
-        data.pop(idx)  # why: 全部賣出即移除
+        data.pop(idx)  # 全部賣出即移除
         st.info("此筆持股已全部賣出並移除。")
     _save_portfolio()
     st.success("已更新持股與已實現損益。")
@@ -171,7 +162,7 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
 
 # ------------------------- Confirm Dialog -------------------------
 def _open_confirm(action: Dict[str, Any]) -> None:
-    st.session_state["confirm"] = action  # why: 集中保存待確認動作
+    st.session_state["confirm"] = action  # 集中保存待確認動作
 
 
 def _clear_confirm() -> None:
@@ -206,7 +197,7 @@ def _show_confirm_ui() -> None:
             _clear_confirm()
             _sell_position(idx, int(info["sell_qty"]), info["sell_date"], float(info["sell_price"]))
 
-    if hasattr(st, "dialog"):
+    if hasattr(st, "dialog"):  # 新版 Streamlit 有彈窗
         @st.dialog(title)
         def _dlg() -> None:
             st.write(msg)
@@ -218,7 +209,7 @@ def _show_confirm_ui() -> None:
                 st.rerun()
 
         _dlg()
-    else:
+    else:  # 退化 UI
         st.warning(f"**{title}**｜{msg}")
         c1, c2 = st.columns(2)
         if c1.button("確認", type="primary", key="fallback_ok"):
@@ -231,7 +222,7 @@ def _show_confirm_ui() -> None:
 # ------------------------- Page -------------------------
 def show(prefill_symbol: Optional[str] = None) -> None:
     st.header("📦 我的庫存")
-    _show_confirm_ui()
+    _show_confirm_ui()  # 若有待確認動作，先顯示彈窗
 
     data = _load_portfolio()
     realized = _load_realized()
@@ -266,7 +257,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         st.metric("已實現損益", f"{total_realized:,.4f}")
         return
 
-    # ---- 表格資料 ----
+    # ---- 表格資料（此處就把數字格式化成字串）----
     rows: List[Dict[str, Any]] = []
     principal = 0.0
     total_value = 0.0
@@ -276,20 +267,20 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         cost = float(row.get("cost", 0.0))
         price = get_latest_price(sym)
         value = (price or 0.0) * qty
-        unreal = (price - cost) * qty if price is not None else float("nan")
-        rate_pct = ((price - cost) / cost * 100.0) if (price is not None and cost > 0) else float("nan")
+        unreal = (price - cost) * qty if price is not None else None
+        rate_pct = ((price - cost) / cost * 100.0) if (price is not None and cost > 0) else None
         link = f"./?nav={'ETF' if guess_is_etf(sym) else '股票'}&symbol={sym}"
 
         rows.append(
             {
                 "買入日": (row.get("buy_date") or "—"),
                 "代碼": sym,
-                "股數": qty,
-                "成本/股": cost,
-                "現價": price,
-                "市值": value,
-                "未實現損益": unreal,
-                "回報率%": rate_pct,
+                "股數": fmt4(qty),
+                "成本/股": fmt4(cost),
+                "現價": fmt4(price),
+                "市值": fmt4(value),
+                "未實現損益": fmt4(unreal),
+                "回報率%": fmtpct2(rate_pct),
                 "連結": link,
             }
         )
@@ -304,23 +295,23 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     except Exception:
         pass
 
-    # data_editor（可點連結）+ 數字格式（千分位/4位；% 2位）
+    # 用 data_editor 顯示（數字已是字串；連結使用 LinkColumn）
     st.data_editor(
         df,
         use_container_width=True,
         disabled=True,
         column_config={
-            "股數": st.column_config.NumberColumn(format="%,.4f"),
-            "成本/股": st.column_config.NumberColumn(format="%,.4f"),
-            "現價": st.column_config.NumberColumn(format="%,.4f"),
-            "市值": st.column_config.NumberColumn(format="%,.4f"),
-            "未實現損益": st.column_config.NumberColumn(format="%,.4f"),
-            "回報率%": st.column_config.NumberColumn(format="%.2f%%"),
+            "股數": st.column_config.TextColumn(),
+            "成本/股": st.column_config.TextColumn(),
+            "現價": st.column_config.TextColumn(),
+            "市值": st.column_config.TextColumn(),
+            "未實現損益": st.column_config.TextColumn(),
+            "回報率%": st.column_config.TextColumn(),
             "連結": st.column_config.LinkColumn(label="連結", help="點我前往該標的頁面"),
         },
     )
 
-    # ---- 總計 ----
+    # ---- 總計（4位 / 2位%）----
     pnl_unrealized = total_value - principal
     total_return_rate = (pnl_unrealized / principal * 100.0) if principal > 0 else 0.0
 
