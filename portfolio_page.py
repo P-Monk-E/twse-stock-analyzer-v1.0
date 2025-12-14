@@ -1,38 +1,4 @@
-# =========================================
-# app.py（只需更新 main() 裡取得預設選項的部分）
-# =========================================
-from __future__ import annotations
-
-import streamlit as st
-import stocks_page
-import etf_page
-import portfolio_page
-
-PAGES = ["股票", "ETF", "庫存"]
-
-def main() -> None:
-    st.sidebar.header("主選單")
-    # 允許以 URL 參數直接導向特定頁面
-    nav_param = st.query_params.get("nav")
-    default_index = PAGES.index(nav_param) if nav_param in PAGES else 0
-
-    nav = st.sidebar.radio("選擇頁面", PAGES, index=default_index, key="nav_page")
-    q_symbol = st.query_params.get("symbol")
-
-    if nav == "股票":
-        stocks_page.show(prefill_symbol=q_symbol)
-    elif nav == "ETF":
-        etf_page.show(prefill_symbol=q_symbol)
-    else:
-        portfolio_page.show(prefill_symbol=q_symbol)
-
-if __name__ == "__main__":
-    main()
-
-
-# =========================================
-# portfolio_page.py（完整覆蓋）
-# =========================================
+# /mount/src/twse-stock-analyzer-v1.0/portfolio_page.py
 from __future__ import annotations
 
 import json
@@ -45,7 +11,7 @@ import streamlit as st
 import yfinance as yf
 
 SAVE_PATH = "portfolio.json"
-REALIZED_PATH = "realized_trades.json"
+REALIZED_PATH = "realized_trades.json"  # 已實現交易紀錄
 
 
 # ------------------------- Storage -------------------------
@@ -115,9 +81,10 @@ def get_latest_price(symbol: str) -> Optional[float]:
             continue
     return None
 
+
 @st.cache_data(ttl=3600)
-def get_display_name(symbol: str) -> str | None:
-    """取中文/英文名稱；why: 表格顯示用。"""
+def get_display_name(symbol: str) -> Optional[str]:
+    """取中文/英文名稱；抓不到回 None。"""
     s = symbol.upper().strip()
     cands = [s] if s.endswith((".TW", ".TWO")) else [f"{s}.TW", f"{s}.TWO"]
     for c in cands:
@@ -129,6 +96,7 @@ def get_display_name(symbol: str) -> str | None:
         except Exception:
             continue
     return None
+
 
 def guess_is_etf(symbol: str) -> bool:
     """簡易判斷：台灣多數 ETF 代碼以 00 開頭。"""
@@ -149,16 +117,20 @@ def _delete_position(idx: int) -> None:
 def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) -> None:
     data = _load_portfolio()
     if not (0 <= idx < len(data)):
-        st.warning("找不到該筆持股。"); return
+        st.warning("找不到該筆持股。")
+        return
     pos = data[idx]
     cur_qty = int(pos.get("qty", 0))
     cost = float(pos.get("cost", 0.0))
     if sell_qty <= 0:
-        st.warning("賣出數量需大於 0。"); return
+        st.warning("賣出數量需大於 0。")
+        return
     if sell_qty > cur_qty:
-        st.warning("賣出數量不可大於目前持股。"); return
+        st.warning("賣出數量不可大於目前持股。")
+        return
     if sell_price <= 0:
-        st.warning("請輸入正確的賣出價格。"); return
+        st.warning("請輸入正確的賣出價格。")
+        return
 
     realized_pnl = (sell_price - cost) * sell_qty
     _append_realized(
@@ -186,52 +158,64 @@ def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) 
 
 # ------------------------- Confirm Dialog -------------------------
 def _open_confirm(action: Dict[str, Any]) -> None:
-    st.session_state["confirm"] = action
+    st.session_state["confirm"] = action  # why: 集中管理確認狀態
+
 
 def _clear_confirm() -> None:
     st.session_state.pop("confirm", None)
+
 
 def _show_confirm_ui() -> None:
     info = st.session_state.get("confirm")
     if not info:
         return
 
-    act = info.get("type"); idx = info.get("idx", -1)
+    act = info.get("type")
+    idx = info.get("idx", -1)
     if act == "delete":
         title = "確認刪除"
         msg = f"確定要 **刪除** 第 {idx + 1} 筆持股嗎？此動作無法復原。"
     elif act == "sell":
         title = "確認賣出"
         msg = (
-            f"確定要於 **{info.get('sell_date')}** 以 **{info.get('sell_price'):.4f}**"
-            f" 價格賣出 **{info.get('sell_qty')} 股**（第 {idx + 1} 筆）嗎？"
+            f"確定要於 **{info.get('sell_date')}** 以 **{info.get('sell_price'):.4f}** "
+            f"價格賣出 **{info.get('sell_qty')} 股**（第 {idx + 1} 筆）嗎？"
         )
     else:
-        _clear_confirm(); return
+        _clear_confirm()
+        return
 
-    def _on_confirm():
+    def _on_confirm() -> None:
         if act == "delete":
-            _clear_confirm(); _delete_position(idx)
+            _clear_confirm()
+            _delete_position(idx)
         else:
-            _clear_confirm(); _sell_position(idx, int(info["sell_qty"]), info["sell_date"], float(info["sell_price"]))
+            _clear_confirm()
+            _sell_position(idx, int(info["sell_qty"]), info["sell_date"], float(info["sell_price"]))
 
     if hasattr(st, "dialog"):
         @st.dialog(title)
-        def _dlg():
+        def _dlg() -> None:
             st.write(msg)
             c1, c2 = st.columns(2)
-            if c1.button("確認", type="primary", key="confirm_ok"): _on_confirm()
-            if c2.button("取消", key="confirm_cancel"): _clear_confirm(); st.rerun()
+            if c1.button("確認", type="primary", key="confirm_ok"):
+                _on_confirm()
+            if c2.button("取消", key="confirm_cancel"):
+                _clear_confirm()
+                st.rerun()
         _dlg()
     else:
         st.warning(f"**{title}**｜{msg}")
         c1, c2 = st.columns(2)
-        if c1.button("確認", type="primary", key="fallback_ok"): _on_confirm()
-        if c2.button("取消", key="fallback_cancel"): _clear_confirm(); st.rerun()
+        if c1.button("確認", type="primary", key="fallback_ok"):
+            _on_confirm()
+        if c2.button("取消", key="fallback_cancel"):
+            _clear_confirm()
+            st.rerun()
 
 
 # ------------------------- Page -------------------------
-def show(prefill_symbol: str | None = None) -> None:
+def show(prefill_symbol: Optional[str] = None) -> None:
     st.header("📦 我的庫存")
     _show_confirm_ui()
 
@@ -256,7 +240,9 @@ def show(prefill_symbol: str | None = None) -> None:
                 data.append(
                     {"symbol": sym.strip(), "qty": int(qty), "cost": float(cost), "buy_date": buy_date.isoformat()}
                 )
-                _save_portfolio(); st.success("已加入。"); st.rerun()
+                _save_portfolio()
+                st.success("已加入。")
+                st.rerun()
 
     # ---- 已實現損益（即便無持倉也顯示）----
     total_realized = sum(float(x.get("pnl", 0.0)) for x in realized)
@@ -267,7 +253,9 @@ def show(prefill_symbol: str | None = None) -> None:
         return
 
     # ---- 表格資料 ----
-    rows = []; principal = 0.0; total_value = 0.0
+    rows: List[Dict[str, Any]] = []
+    principal = 0.0
+    total_value = 0.0
     for row in data:
         sym = row.get("symbol")
         qty = float(row.get("qty", 0.0))
@@ -291,7 +279,7 @@ def show(prefill_symbol: str | None = None) -> None:
                 "市值": value,
                 "未實現損益": unreal,
                 "回報率%": rate_pct,
-                "連結": link,  # 透過 LinkColumn 呈現
+                "連結": link,
             }
         )
         principal += cost * qty
@@ -305,14 +293,14 @@ def show(prefill_symbol: str | None = None) -> None:
     except Exception:
         pass
 
-    # 色彩：正紅、負綠
-    def _style_num(v):
+    def _style_num(v: Any) -> str:
         if isinstance(v, (int, float)) and pd.notna(v):
-            if v > 0: return "color:red;"
-            if v < 0: return "color:green;"
+            if v > 0:
+                return "color:red;"
+            if v < 0:
+                return "color:green;"
         return ""
 
-    # 用 data_editor + LinkColumn 呈現可點連結；數字格式：千分位4位，小數百分比2位
     try:
         styled = (
             df.style
@@ -331,15 +319,18 @@ def show(prefill_symbol: str | None = None) -> None:
             .applymap(_style_num, subset=["回報率%"])
         )
         st.data_editor(
-            styled, use_container_width=True, disabled=True,
+            styled,
+            use_container_width=True,
+            disabled=True,
             column_config={
                 "連結": st.column_config.LinkColumn(label="連結", help="點我前往該標的頁面"),
             },
         )
     except Exception:
-        # 備援：若 styler 不可用，仍提供可點連結欄
         st.data_editor(
-            df, use_container_width=True, disabled=True,
+            df,
+            use_container_width=True,
+            disabled=True,
             column_config={
                 "股數": st.column_config.NumberColumn(format="%.4f"),
                 "成本/股": st.column_config.NumberColumn(format="%.4f"),
@@ -368,12 +359,21 @@ def show(prefill_symbol: str | None = None) -> None:
         )
         st.caption(f"已實現損益：{total_realized:,.4f}")
 
-    # ---- 管理持股（刪除 / 賣出；集中於面板）----
+    # ---- 管理持股（刪除 / 賣出）----
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
-        options = [f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}" for i, r in enumerate(data)]
-        sel_idx = st.selectbox("選擇要操作的持股", options=range(len(options)), format_func=lambda i: options[i], key="mgmt_sel")
+        options = [
+            f"{i+1}. {r.get('symbol')}｜買入日:{r.get('buy_date','—')}｜股數:{r.get('qty')}"
+            for i, r in enumerate(data)
+        ]
+        sel_idx = st.selectbox(
+            "選擇要操作的持股",
+            options=range(len(options)),
+            format_func=lambda i: options[i],
+            key="mgmt_sel",
+        )
 
-        cur = data[sel_idx]; cur_qty = int(cur.get("qty", 0))
+        cur = data[sel_idx]
+        cur_qty = int(cur.get("qty", 0))
         st.caption(f"目前選擇：{cur.get('symbol')}｜買入日 {cur.get('buy_date','—')}｜可用股數 {cur_qty:,}")
 
         c1, c2, c3 = st.columns([1, 1, 1])
@@ -381,19 +381,27 @@ def show(prefill_symbol: str | None = None) -> None:
             if st.button("刪除這筆持股", key="btn_delete", type="secondary"):
                 _open_confirm({"type": "delete", "idx": sel_idx})
         with c2:
-            sell_date = st.date_input("賣出日", value=date.today(), key="sell_date_global")
-            sell_qty = st.number_input(
-                "賣出數量", min_value=1, max_value=max(cur_qty, 1),
-                value=min(100, max(cur_qty, 1)), step=1, key="sell_qty_global"
+            sell_date_val = st.date_input("賣出日", value=date.today(), key="sell_date_global")
+            sell_qty_val = st.number_input(
+                "賣出數量",
+                min_value=1,
+                max_value=max(cur_qty, 1),
+                value=min(100, max(cur_qty, 1)),
+                step=1,
+                key="sell_qty_global",
             )
         with c3:
-            sell_price = st.number_input("賣出價格", min_value=0.0, value=0.0, step=0.0001, key="sell_price_global")
+            sell_price_val = st.number_input(
+                "賣出價格", min_value=0.0, value=0.0, step=0.0001, key="sell_price_global"
+            )
             if st.button("賣出", key="btn_sell", type="primary"):
                 _open_confirm(
                     {
-                        "type": "sell", "idx": sel_idx,
-                        "sell_qty": int(sell_qty), "sell_date": sell_date,
-                        "sell_price": float(sell_price),
+                        "type": "sell",
+                        "idx": sel_idx,
+                        "sell_qty": int(sell_qty_val),
+                        "sell_date": sell_date_val,
+                        "sell_price": float(sell_price_val),
                     }
                 )
 
