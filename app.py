@@ -5,8 +5,10 @@ import stocks_page
 import etf_page
 import portfolio_page
 
-st.sidebar.title("主選單")
-page = st.sidebar.radio("選擇頁面", ["推薦", "股票", "ETF", "庫存"])
+query_params = st.experimental_get_query_params()
+default_page = query_params.get("page", ["推薦"])[0]
+page = st.sidebar.radio("選擇頁面", ["推薦", "股票", "ETF", "庫存"],
+                        index=["推薦", "股票", "ETF", "庫存"].index(default_page))
 
 if page == "推薦":
     recommend_page.show()
