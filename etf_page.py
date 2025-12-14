@@ -1,8 +1,11 @@
+# /mnt/data/etf_page.py
 import streamlit as st
 from stock_utils import get_metrics, find_ticker_by_name
 from chart_utils import plot_candlestick_with_ma
 import yfinance as yf
 from datetime import datetime, timedelta
+import math
+import pandas as pd
 
 def show(prefill_symbol=None):
     st.header("📊 ETF 專區")
@@ -22,12 +25,13 @@ def show(prefill_symbol=None):
     mkt = yf.Ticker("^TWII").history(start=start, end=end)["Close"]
 
     def tag(val, thr, greater=True):
-        if val is None:
+        if val is None or (isinstance(val, float) and math.isnan(val)) or (isinstance(val, (int, float)) and pd.isna(val)):
             return "❓"
         return "✅" if (val >= thr if greater else val <= thr) else "❗"
 
     try:
-        stats = get_metrics(ticker, mkt, rf, start, end)
+        # ETF：確保 is_etf=True
+        stats = get_metrics(ticker, mkt, rf, start, end, is_etf=True)
         if stats:
             st.write(f"📊 {stats['name']} ({ticker})")
 
