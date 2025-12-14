@@ -103,6 +103,11 @@ def _append_realized(rec: Dict[str, Any]) -> None:
     except Exception as e:
         st.warning(f"寫入 {REALIZED_PATH} 失敗：{e}")
 
+warn = st.session_state.get("portfolio_risk_warning")
+
+if warn:
+    st.warning(warn)
+
 
 # ---------- Actions ----------
 def _delete_position(idx: int) -> None:
