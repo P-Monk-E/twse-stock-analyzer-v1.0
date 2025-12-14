@@ -1,5 +1,5 @@
 import streamlit as st
-from stock_utils import get_metrics, find_ticker_by_name, is_etf
+from stock_utils import get_metrics, find_ticker_by_name
 from chart_utils import plot_candlestick_with_ma
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -7,18 +7,15 @@ from datetime import datetime, timedelta
 def show():
     st.header("📈 股票專區")
 
-    user_input = st.text_input("輸入股票名稱或代碼", "")
+    query_params = st.experimental_get_query_params()
+    symbol = query_params.get("symbol", [None])[0]
+
+    user_input = st.text_input("輸入股票名稱或代碼", symbol or "").strip().upper()
     if not user_input:
         st.info("請輸入股票名稱或代碼以查詢。")
         return
 
-    ticker = find_ticker_by_name(user_input.strip().upper())
-    
-    # ➤ 若是 ETF，就不允許在股票區查詢
-    if is_etf(ticker):
-        st.error("⚠️ 這是 ETF，請改至『ETF 專區』查詢。")
-        return
-
+    ticker = find_ticker_by_name(user_input)
     end = datetime.today()
     start = end - timedelta(days=365 * 3)
     rf = 0.01
@@ -33,7 +30,6 @@ def show():
         stats = get_metrics(ticker, mkt, rf, start, end)
         if stats:
             st.write(f"📊 {stats['name']} ({ticker})")
-
             st.dataframe({
                 "流動比率": [f"{stats['流動比率']} {tag(stats['流動比率'],1.25)}"],
                 "ROE": [f"{stats['ROE']} {tag(stats['ROE'],0.08)}"],
