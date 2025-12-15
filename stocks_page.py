@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 import math
 from datetime import datetime, timedelta
 from typing import Optional
+
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -11,7 +13,6 @@ from chart_utils import plot_candlestick_with_ma
 from risk_grading import (
     grade_alpha,
     grade_sharpe,
-    grade_treynor,
     grade_debt_equity,
     grade_current_ratio,
     grade_roe,
@@ -42,8 +43,12 @@ def show(prefill_symbol: str | None = None) -> None:
     st.header("📈 股票專區")
 
     default_symbol = st.query_params.get("symbol", prefill_symbol or "")
-    st.text_input("輸入股票名稱或代碼（例：台積電 或 2330）",
-                  value=default_symbol, key="stock_symbol", on_change=_sync_symbol_from_input)
+    st.text_input(
+        "輸入股票名稱或代碼（例：台積電 或 2330）",
+        value=default_symbol,
+        key="stock_symbol",
+        on_change=_sync_symbol_from_input,
+    )
     user_input = (st.session_state.get("stock_symbol") or "").strip()
     if not user_input:
         st.info("請輸入股票名稱或代碼以查詢。")
@@ -68,7 +73,8 @@ def show(prefill_symbol: str | None = None) -> None:
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
         st.subheader(f"{name or ticker}（{ticker}）")
 
-        col1, col2, col3, col4 = st.columns(4)
+        # ======= Top KPI：三欄（移除 Treynor）=======
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
             st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
@@ -76,22 +82,22 @@ def show(prefill_symbol: str | None = None) -> None:
             st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe Ratio")))
             st.caption(_tag(stats.get("Sharpe Ratio"), 1, True) + " >1 佳")
         with col3:
-            st.metric("Treynor Ratio", _fmt2(stats.get("Treynor")))
-            st.caption("市場單位風險回報")
-        with col4:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
 
-        # === 精簡風險摘要（加入 Alpha） ===
-        grades = {}
-        grades["Alpha"] = grade_alpha(stats.get("Alpha"))
-        grades["Sharpe"] = grade_sharpe(stats.get("Sharpe Ratio"))
-        grades["Treynor"] = grade_treynor(stats.get("Treynor"))
-        v_de = stats.get("負債權益比"); grades["負債權益比"] = grade_debt_equity(v_de if pd.notna(v_de) else None)
-        v_cr = stats.get("流動比率");   grades["流動比率"]   = grade_current_ratio(v_cr if pd.notna(v_cr) else None)
-        v_roe = stats.get("ROE");      grades["ROE"]        = grade_roe(v_roe if pd.notna(v_roe) else None)
+        # ======= 風險摘要（移除 Treynor）=======
+        grades = {
+            "Alpha":  grade_alpha(stats.get("Alpha")),
+            "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
+        }
+        v_de = stats.get("負債權益比")
+        v_cr = stats.get("流動比率")
+        v_roe = stats.get("ROE")
+        grades["負債權益比"] = grade_debt_equity(v_de if pd.notna(v_de) else None)
+        grades["流動比率"]   = grade_current_ratio(v_cr if pd.notna(v_cr) else None)
+        grades["ROE"]        = grade_roe(v_roe if pd.notna(v_roe) else None)
 
-        crit, warn, good = summarize(grades)
+        crit, warn, _ = summarize(grades)
         if crit:
             st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
         elif warn:
@@ -99,6 +105,7 @@ def show(prefill_symbol: str | None = None) -> None:
         else:
             st.success("✅ 指標狀態良好。")
 
+        # ======= 財務比率：一行精簡列示 =======
         def _icon(name: str) -> str:
             return grades[name][0]
         roe_txt = f"{(v_roe*100):.2f}%" if (v_roe is not None and pd.notna(v_roe)) else "—"
@@ -109,6 +116,7 @@ def show(prefill_symbol: str | None = None) -> None:
         )
         st.markdown(line)
 
+        # ======= 圖表 + 波動提示 =======
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
         madr = stats.get("MADR")
