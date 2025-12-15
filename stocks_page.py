@@ -39,6 +39,22 @@ def _fmt2(v: Optional[float]) -> str:
     except Exception:
         return "—"
 
+def _fmt2pct(v: Optional[float]) -> str:
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f"{float(v)*100:.2f}%"
+    except Exception:
+        return "—"
+
+def _fmt2comma(v: Optional[float]) -> str:
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f"{float(v):,.2f}"
+    except Exception:
+        return "—"
+
 def show(prefill_symbol: str | None = None) -> None:
     st.header("📈 股票專區")
 
@@ -73,7 +89,7 @@ def show(prefill_symbol: str | None = None) -> None:
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
         st.subheader(f"{name or ticker}（{ticker}）")
 
-        # ======= Top KPI：三欄（移除 Treynor）=======
+        # ======= Top KPI：三欄（無 Treynor）=======
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
@@ -85,7 +101,7 @@ def show(prefill_symbol: str | None = None) -> None:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
 
-        # ======= 風險摘要（移除 Treynor）=======
+        # ======= 風險摘要（不含新欄位）=======
         grades = {
             "Alpha":  grade_alpha(stats.get("Alpha")),
             "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
@@ -105,18 +121,24 @@ def show(prefill_symbol: str | None = None) -> None:
         else:
             st.success("✅ 指標狀態良好。")
 
-        # ======= 財務比率：一行精簡列示 =======
+        # ======= 財務列：原三項 + 股東權益 + EPS(TTM) =======
+        equity = stats.get("Equity")
+        eps_ttm = stats.get("EPS_TTM")
+
         def _icon(name: str) -> str:
             return grades[name][0]
-        roe_txt = f"{(v_roe*100):.2f}%" if (v_roe is not None and pd.notna(v_roe)) else "—"
+
         line = (
             f"**負債權益比**：{_fmt2(v_de)} {_icon('負債權益比')} ｜ "
             f"**流動比率**：{_fmt2(v_cr)} {_icon('流動比率')} ｜ "
-            f"**ROE**：{roe_txt} {_icon('ROE')}"
+            f"**ROE**：{_fmt2pct(v_roe)} {_icon('ROE')} ｜ "
+            f"**股東權益**：{_fmt2comma(equity)} ｜ "
+            f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
         )
+        # 註：股東權益 / EPS 只顯示，不參與評分
         st.markdown(line)
 
-        # ======= 圖表 + 波動提示 =======
+        # ======= 圖表 =======
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
         madr = stats.get("MADR")
