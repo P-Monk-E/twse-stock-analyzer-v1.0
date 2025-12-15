@@ -1,5 +1,5 @@
 # /mnt/data/portfolio_page.py
-# 📦 我的庫存（整合版，加入「分組(中文)」並與觀察名單快速存取同步）
+# 📦 我的庫存（整合版：新增「已實現損益」總結欄位，並保留分組/風險/賣出/FIFO 等功能）
 from __future__ import annotations
 
 import json
@@ -18,6 +18,7 @@ SAVE_PATH = "portfolio.json"
 REALIZED_PATH = "realized_trades.json"
 
 def guess_is_etf(symbol: str) -> bool:
+    # 台灣 ETF 常見 00xxx；僅供「快速前往」預設頁籤判斷
     return symbol.strip().upper().startswith("00")
 
 @st.cache_data(ttl=1800)
@@ -173,6 +174,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     st.header("📦 我的庫存")
     data = _load_portfolio()
     realized = _load_realized()
+    total_realized = sum(float(x.get("pnl", 0.0)) for x in realized)
 
     # 風險偵測（近一年估算）
     with st.expander("風險偵測（近一年估算）", expanded=False):
@@ -226,10 +228,10 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                 })
                 _save_portfolio(); st.success("已加入。"); st.rerun()
 
-    # 無持股
+    # 無持股：仍顯示已實現損益
     if not data:
         st.info("目前尚未有持股，請先新增。")
-        st.metric("已實現損益", f"{sum(float(x.get('pnl',0.0)) for x in realized):,.4f}")
+        st.metric("已實現損益", f"{total_realized:,.4f}")
         _render_confirm()
         return
 
@@ -270,7 +272,8 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         return ""
     styled = (
         df.style
-        .format({"股數":"{:,.4f}","成本/股":"{:,.4f}","現價":"{:,.4f}","市值":"{:,.4f}","未實現損益":"{:,.4f}","回報率%":"{:.2f}%"}, na_rep="—")
+        .format({"股數":"{:,.4f}","成本/股":"{:,.4f}","現價":"{:,.4f}","市值":"{:,.4f}","未實現損益":"{:,.4f}","回報率%":"{:.2f}%"},
+                na_rep="—")
         .applymap(_pos_neg, subset=["未實現損益","回報率%"])
     )
     st.dataframe(styled, use_container_width=True)
@@ -294,14 +297,17 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     else:
         st.info("目前無可用的市值資料。")
 
-    # 總結
+    # 總結（含已實現損益）
     pnl_unrealized = total_value - principal
     rate = (pnl_unrealized / principal * 100.0) if principal > 0 else 0.0
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("總市值", f"{total_value:,.4f}"); st.caption(f"本金：{principal:,.4f}")
+        st.metric("總市值", f"{total_value:,.4f}")
+        st.caption(f"本金：{principal:,.4f}")
     with c2:
         st.metric("總未實現損益", f"{pnl_unrealized:,.4f}", delta=f"{rate:.2f}%")
+    with c3:
+        st.metric("已實現損益", f"{total_realized:,.4f}")
 
     # 管理持股（刪除 / 賣出 / FIFO）
     with st.expander("管理持股（刪除 / 賣出）", expanded=True):
@@ -332,11 +338,13 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         with c4:
             f_price = st.number_input("賣出價格（FIFO）", min_value=0.0, value=0.0, step=0.0001, key="fifo_price")
         with c5:
-            f_qty = st.number_input("賣出數量（FIFO）", min_value=1, max_value=max(f_avail,1), value=min(100, max(f_avail,1)), step=1, key="fifo_qty")
+            f_qty = st.number_input("賣出數量（FIFO）", min_value=1, max_value=max(f_avail,1),
+                                    value=min(100, max(f_avail,1)), step=1, key="fifo_qty")
         st.caption(f"可用數量：{f_avail:,}")
         if st.button("依 FIFO 賣出", type="primary", key="btn_fifo_sell"):
             if float(f_price) <= 0: st.warning("請輸入正確賣出價格。")
             else:
-                st.session_state["confirm"] = {"type":"sell_fifo","symbol": f_sym,"sell_qty": int(f_qty),"sell_date": f_date,"sell_price": float(f_price)}
+                st.session_state["confirm"] = {"type":"sell_fifo","symbol": f_sym,"sell_qty": int(f_qty),
+                                               "sell_date": f_date,"sell_price": float(f_price)}
 
     _render_confirm()
