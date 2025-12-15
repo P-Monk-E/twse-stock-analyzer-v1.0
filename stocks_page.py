@@ -1,3 +1,6 @@
+# =========================================
+# /mnt/data/stocks_page.py  （右上角「＋加入觀察」）
+# =========================================
 from __future__ import annotations
 
 import math
@@ -18,6 +21,8 @@ from risk_grading import (
     grade_roe,
     summarize,
 )
+from watchlist_page import add_to_watchlist  # 新增
+# 本檔其餘結構沿用你現有版本。 :contentReference[oaicite:1]{index=1}
 
 def _sync_symbol_from_input() -> None:
     txt = (st.session_state.get("stock_symbol") or "").strip()
@@ -59,12 +64,8 @@ def show(prefill_symbol: str | None = None) -> None:
     st.header("📈 股票專區")
 
     default_symbol = st.query_params.get("symbol", prefill_symbol or "")
-    st.text_input(
-        "輸入股票名稱或代碼（例：台積電 或 2330）",
-        value=default_symbol,
-        key="stock_symbol",
-        on_change=_sync_symbol_from_input,
-    )
+    st.text_input("輸入股票名稱或代碼（例：台積電 或 2330）",
+                  value=default_symbol, key="stock_symbol", on_change=_sync_symbol_from_input)
     user_input = (st.session_state.get("stock_symbol") or "").strip()
     if not user_input:
         st.info("請輸入股票名稱或代碼以查詢。")
@@ -87,7 +88,13 @@ def show(prefill_symbol: str | None = None) -> None:
             return
 
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
-        st.subheader(f"{name or ticker}（{ticker}）")
+        # ---- 標題 + 右上角加入觀察 ----
+        c1, c2 = st.columns([1, 0.15])
+        with c1:
+            st.subheader(f"{name or ticker}（{ticker}）")
+        with c2:
+            if st.button("＋ 加入觀察", key="btn_watch_stock"):
+                add_to_watchlist("stock", ticker, name or ticker)
 
         # ======= Top KPI：三欄（無 Treynor）=======
         col1, col2, col3 = st.columns(3)
@@ -135,8 +142,7 @@ def show(prefill_symbol: str | None = None) -> None:
             f"**股東權益**：{_fmt2comma(equity)} ｜ "
             f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
         )
-        # 註：股東權益 / EPS 只顯示，不參與評分
-        st.markdown(line)
+        st.markdown(line)  # 股東權益 / EPS 僅顯示，不評分
 
         # ======= 圖表 =======
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
