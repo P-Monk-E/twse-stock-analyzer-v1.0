@@ -94,6 +94,166 @@ def _append_realized(rec: Dict[str, Any]) -> None:
     except Exception as e:
         st.warning(f"寫入 {REALIZED_PATH} 失敗：{e}")
 
+# ---------- Actions ----------
+def _delete_position(idx: int) -> None:
+    data = _load_portfolio()
+    if 0 <= idx < len(data):
+        data.pop(idx)
+        _save_portfolio()
+        st.success("已刪除。")
+        st.rerun()
+
+def _sell_position(idx: int, sell_qty: int, sell_date: date, sell_price: float) -> None:
+    data = _load_portfolio()
+    if not (0 <= idx < len(data)):
+        st.warning("找不到該筆持股。")
+        return
+    pos = data[idx]
+    cur_qty = int(pos.get("qty", 0))
+    cost = float(pos.get("cost", 0.0))
+    if sell_qty <= 0:
+        st.warning("賣出數量需大於 0。"); return
+    if sell_qty > cur_qty:
+        st.warning("賣出數量不可大於目前持股。"); return
+    if sell_price <= 0:
+        st.warning("請輸入正確的賣出價格。"); return
+
+    realized_pnl = (sell_price - cost) * sell_qty
+    _append_realized(
+        {
+            "symbol": pos.get("symbol"),
+            "sell_date": sell_date.isoformat(),
+            "qty": int(sell_qty),
+            "sell_price": float(sell_price),
+            "buy_cost": cost,
+            "pnl": realized_pnl,
+        }
+    )
+
+    pos["qty"] = cur_qty - sell_qty
+    pos.setdefault("sell_logs", []).append(
+        {"date": sell_date.isoformat(), "qty": int(sell_qty), "price": float(sell_price)}
+    )
+    if pos["qty"] == 0:
+        data.pop(idx)
+        st.info("此筆持股已全部賣出並移除。")
+    _save_portfolio()
+    st.success("已更新持股與已實現損益。")
+    st.rerun()
+
+def _fifo_sell(symbol: str, sell_qty: int, sell_date: date, sell_price: float) -> None:
+    """跨批次 FIFO 賣出同代碼持股；逐批寫入 realized_trades。"""
+    data = _load_portfolio()
+    lots = [(i, r) for i, r in enumerate(data) if str(r.get("symbol")).strip().upper() == symbol.strip().upper()]
+    if not lots:
+        st.warning("找不到該代碼的持股。"); return
+    if sell_qty <= 0:
+        st.warning("賣出數量需大於 0。"); return
+    if sell_price <= 0:
+        st.warning("請輸入正確的賣出價格。"); return
+
+    # 依買入日升冪（FIFO）；沒有日期的排最後
+    def _key(t):
+        d = t[1].get("buy_date") or ""
+        try:
+            return (pd.to_datetime(d), t[0])
+        except Exception:
+            return (pd.Timestamp.max, t[0])
+
+    lots.sort(key=_key)
+
+    remaining = sell_qty
+    for idx, lot in lots:
+        if remaining <= 0:
+            break
+        lot_qty = int(lot.get("qty", 0))
+        if lot_qty <= 0:
+            continue
+        take = min(remaining, lot_qty)
+        cost = float(lot.get("cost", 0.0))
+        pnl = (sell_price - cost) * take
+        _append_realized(
+            {
+                "symbol": lot.get("symbol"),
+                "sell_date": sell_date.isoformat(),
+                "qty": int(take),
+                "sell_price": float(sell_price),
+                "buy_cost": cost,
+                "pnl": pnl,
+                "buy_date": lot.get("buy_date", None),
+            }
+        )
+        lot["qty"] = lot_qty - take
+        lot.setdefault("sell_logs", []).append(
+            {"date": sell_date.isoformat(), "qty": int(take), "price": float(sell_price), "mode": "FIFO"}
+        )
+        remaining -= take
+
+    # 刪除 qty==0 的批次
+    st.session_state.portfolio = [r for r in data if int(r.get("qty", 0)) > 0]
+    _save_portfolio()
+
+    sold = sell_qty - max(remaining, 0)
+    if sold <= 0:
+        st.warning("沒有可賣出的數量。"); return
+    if remaining > 0:
+        st.info(f"持股不足，已依 FIFO 賣出 {sold} 股。")
+    else:
+        st.success(f"已依 FIFO 完成賣出 {sold} 股。")
+    st.rerun()
+
+# ---------- Confirm Dialog ----------
+def _render_confirm_dialog() -> None:
+    """在頁面底部顯示二次確認對話框。"""
+    info = st.session_state.get("confirm")
+    if not info:
+        return
+
+    act = info.get("type")
+    with st.container():
+        st.warning("請再次確認以下操作無誤：")
+        if act == "delete":
+            idx = info.get("idx")
+            data = _load_portfolio()
+            if 0 <= idx < len(data):
+                row = data[idx]
+                st.write(f"將 **刪除**：{row.get('symbol')}｜買入日 {row.get('buy_date','—')}｜股數 {row.get('qty')}")
+        elif act == "sell":
+            st.write(
+                f"將 **賣出**：索引 {info.get('idx')}｜數量 {info.get('sell_qty')}｜"
+                f"價格 {info.get('sell_price')}｜日期 {info.get('sell_date')}"
+            )
+        elif act == "sell_fifo":
+            st.write(
+                f"將 **FIFO 賣出**：代碼 {info.get('symbol')}｜數量 {info.get('sell_qty')}｜"
+                f"價格 {info.get('sell_price')}｜日期 {info.get('sell_date')}"
+            )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✅ 確認執行", key="btn_confirm_yes"):
+                try:
+                    if act == "delete":
+                        _delete_position(int(info.get("idx", -1)))
+                    elif act == "sell":
+                        _sell_position(int(info.get("idx", -1)),
+                                       int(info.get("sell_qty", 0)),
+                                       info.get("sell_date"),
+                                       float(info.get("sell_price", 0.0)))
+                    elif act == "sell_fifo":
+                        _fifo_sell(str(info.get("symbol")),
+                                   int(info.get("sell_qty", 0)),
+                                   info.get("sell_date"),
+                                   float(info.get("sell_price", 0.0)))
+                finally:
+                    st.session_state.pop("confirm", None)
+                    st.rerun()
+        with c2:
+            if st.button("取消", key="btn_confirm_cancel"):
+                st.session_state.pop("confirm", None)
+                st.info("已取消操作。")
+                st.rerun()
+
 # ---------- Page ----------
 def show(prefill_symbol: Optional[str] = None) -> None:
     st.header("📦 我的庫存")
@@ -101,38 +261,28 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     data = _load_portfolio()
     realized = _load_realized()
 
-    # 風險偵測（估算組合 Sharpe/Treynor）
+    # 風險偵測（近一年估算）
     with st.expander("風險偵測（近一年估算）", expanded=False):
-        st.caption("說明：依最近收盤價權重合成組合報酬，市場以 ^TWII（取不到時用 ^TAIEX，最後 ^GSPC），rf=1%。")
+        st.caption("說明：依最近收盤價權重合成組合報酬，市場以 ^TWII（取不到時 ^TAIEX，最後 ^GSPC），rf=1%。")
 
-        # 可調門檻（存放於 session_state）
         ns_default = float(st.session_state.get("non_sys_thr", 0.5))
         s_default = float(st.session_state.get("sys_thr", 0.5))
         c1, c2 = st.columns(2)
         with c1:
-            non_sys_thr = st.slider(
-                "非系統性門檻：Treynor − Sharpe >",
-                min_value=0.1, max_value=2.0, step=0.1, value=ns_default, help="越大越嚴格；預設 0.5"
-            )
+            non_sys_thr = st.slider("非系統性門檻：Treynor − Sharpe >", 0.1, 2.0, ns_default, 0.1)
         with c2:
-            sys_thr = st.slider(
-                "系統性門檻：Treynor − Sharpe < −",
-                min_value=0.1, max_value=2.0, step=0.1, value=s_default, help="越大越嚴格；預設 0.5"
-            )
+            sys_thr = st.slider("系統性門檻：Treynor − Sharpe < −", 0.1, 2.0, s_default, 0.1)
         st.session_state["non_sys_thr"] = float(non_sys_thr)
         st.session_state["sys_thr"] = float(sys_thr)
 
         if st.button("估算並產生風險警告", type="primary"):
             sharpe, treynor, dbg = estimate_portfolio_risk(data)
-
-            # 顯示 4 位小數的即時數值與 diff
             diff = None if (sharpe is None or treynor is None) else (treynor - sharpe)
             col_a, col_b, col_c = st.columns(3)
             col_a.metric("Sharpe", _fmt4(sharpe))
             col_b.metric("Treynor", _fmt4(treynor))
             col_c.metric("Diff (T−S)", _fmt4(diff))
 
-            # 結果訊息（改為正確分流）
             if sharpe is None and treynor is None:
                 st.warning(f"⚠ 無法估算：{dbg}")
             elif treynor is None:
@@ -144,23 +294,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                     st.warning(msg)
                 else:
                     st.success("✅ 估算完成，未偵測到明顯分散/系統性風險失衡。")
-
-    # ======== 以下為既有庫存管理 ========
-    def fmt4(x: Optional[float]) -> str:
-        try:
-            if x is None or (isinstance(x, float) and pd.isna(x)):
-                return "—"
-            return f"{float(x):,.4f}"
-        except Exception:
-            return "—"
-
-    def fmtpct2(x: Optional[float]) -> str:
-        try:
-            if x is None or (isinstance(x, float) and pd.isna(x)):
-                return "—"
-            return f"{float(x):.2f}%"
-        except Exception:
-            return "—"
 
     # 新增持股
     with st.expander("新增持股", expanded=True):
@@ -185,6 +318,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     if not data:
         st.info("目前尚未有持股，請先新增。")
         st.metric("已實現損益", f"{total_realized:,.4f}")
+        _render_confirm_dialog()
         return
 
     # 主表
@@ -251,35 +385,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     )
     st.dataframe(styled, use_container_width=True)
 
-    st.caption("快速前往：")
-    link_df = pd.DataFrame(links)
-    st.data_editor(
-        link_df,
-        use_container_width=True,
-        disabled=True,
-        column_config={"前往": st.column_config.LinkColumn(label="前往專區")},
-        hide_index=True,
-    )
-
-    st.subheader("資產配置（市值占比）", anchor=False)
-    alloc = (
-        df[["代碼", "市值"]]
-        .copy()
-        .dropna(subset=["市值"])
-        .groupby("代碼", as_index=False)["市值"]
-        .sum()
-        .sort_values("市值", ascending=False)
-    )
-    total_mv = alloc["市值"].sum() if not alloc.empty else 0.0
-    if total_mv > 0:
-        alloc["占比%"] = alloc["市值"] / total_mv * 100.0
-        alloc_display = alloc.copy()
-        alloc_display["市值"] = alloc_display["市值"].apply(lambda v: f"{v:,.4f}")
-        alloc_display["占比%"] = alloc_display["占比%"].apply(lambda v: f"{v:.2f}%")
-        st.dataframe(alloc_display, use_container_width=True, hide_index=True)
-    else:
-        st.info("目前無可用的市值資料。")
-
+    # 總計
     pnl_unrealized = total_value - principal
     total_return_rate = (pnl_unrealized / principal * 100.0) if principal > 0 else 0.0
 
@@ -310,14 +416,18 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         with c3:
             sell_price_val = st.number_input("賣出價格", min_value=0.0, value=0.0, step=0.0001, key="sell_price_global")
             if st.button("賣出", key="btn_sell", type="primary"):
-                st.session_state["confirm"] = {
-                    "type": "sell",
-                    "idx": sel_idx,
-                    "sell_qty": int(sell_qty_val),
-                    "sell_date": sell_date_val,
-                    "sell_price": float(sell_price_val),
-                }
+                if float(sell_price_val) <= 0:
+                    st.warning("請先輸入正確的賣出價格（>0）。")
+                else:
+                    st.session_state["confirm"] = {
+                        "type": "sell",
+                        "idx": sel_idx,
+                        "sell_qty": int(sell_qty_val),
+                        "sell_date": sell_date_val,
+                        "sell_price": float(sell_price_val),
+                    }
 
+        # FIFO 賣出
         st.divider()
         st.subheader("FIFO 賣出（依代碼跨批次）", anchor=False)
         symbols = sorted({str(r.get("symbol")) for r in data})
@@ -332,27 +442,16 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                                        value=min(100, max(fifo_available, 1)), step=1, key="fifo_qty")
         st.caption(f"可用數量：{fifo_available:,}")
         if st.button("依 FIFO 賣出", type="primary", key="btn_fifo_sell"):
-            st.session_state["confirm"] = {
-                "type": "sell_fifo",
-                "symbol": fifo_symbol,
-                "sell_qty": int(fifo_qty),
-                "sell_date": fifo_date,
-                "sell_price": float(fifo_price),
-            }
+            if float(fifo_price) <= 0:
+                st.warning("請先輸入正確的賣出價格（>0）。")
+            else:
+                st.session_state["confirm"] = {
+                    "type": "sell_fifo",
+                    "symbol": fifo_symbol,
+                    "sell_qty": int(fifo_qty),
+                    "sell_date": fifo_date,
+                    "sell_price": float(fifo_price),
+                }
 
-    info = st.session_state.get("confirm")
-    if info:
-        act = info.get("type"); idx = info.get("idx", -1)
-        if act == "delete":
-            data = _load_portfolio()
-            if 0 <= idx < len(data):
-                data.pop(idx)
-                _save_portfolio()
-                st.success("已刪除。")
-                st.rerun()
-        elif act == "sell":
-            # 保留你原邏輯（此處略）；如需我再補完整函式，告知我。
-            pass
-        elif act == "sell_fifo":
-            pass
-        st.session_state.pop("confirm", None)
+    # 二次確認對話框（統一渲染）
+    _render_confirm_dialog()
