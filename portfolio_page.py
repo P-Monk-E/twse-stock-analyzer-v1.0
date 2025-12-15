@@ -1,3 +1,6 @@
+# =========================================
+# /mnt/data/portfolio_page.py  （恢復「快速前往」超連結）
+# =========================================
 from __future__ import annotations
 
 import json
@@ -357,7 +360,9 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                 "回報率%": rate_pct,
             }
         )
-        links.append({"代碼": sym, "前往": f"./?nav={'ETF' if guess_is_etf(sym) else '股票'}&symbol={sym}"})
+        # ---- 快速前往連結（保留 .TW/.TWO 由接收頁自行處理）----
+        nav = 'ETF' if guess_is_etf(sym) else '股票'
+        links.append({"代碼": sym, "前往": f"./?nav={nav}&symbol={sym}"})
         principal += cost * qty
         total_value += value
 
@@ -395,7 +400,21 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     )
     st.dataframe(styled, use_container_width=True)
 
-    # ======== 資產配置（市值占比）—— 恢復這一段 ========
+    # ======== 快速前往（恢復連結區塊） ========
+    st.caption("快速前往：")
+    link_df = pd.DataFrame(links)
+    st.data_editor(
+        link_df,
+        use_container_width=True,
+        disabled=True,
+        hide_index=True,
+        column_config={
+            "代碼": st.column_config.TextColumn("代碼"),
+            "前往": st.column_config.LinkColumn("前往專區"),
+        },
+    )
+
+    # ======== 資產配置（市值占比） ========
     st.subheader("資產配置（市值占比）", anchor=False)
     alloc = (
         df[["代碼", "市值"]]
