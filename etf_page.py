@@ -1,13 +1,16 @@
+# /mnt/data/etf_page.py
 from __future__ import annotations
+
 import math
 from datetime import datetime, timedelta
 from typing import Optional
+
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+
 from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
 from portfolio_risk_utils import diversification_warning
-
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
 from chart_utils import plot_candlestick_with_ma
 
@@ -35,8 +38,12 @@ def show(prefill_symbol: str | None = None) -> None:
     st.header("📊 ETF 專區")
 
     default_symbol = st.query_params.get("symbol", prefill_symbol or "")
-    st.text_input("輸入 ETF 名稱或代碼（例：0050 / 0056 / 006208 / 00980A）",
-                  value=default_symbol, key="etf_symbol", on_change=_sync_symbol_from_input)
+    st.text_input(
+        "輸入 ETF 名稱或代碼（例：0050 / 0056 / 006208 / 00980A）",
+        value=default_symbol,
+        key="etf_symbol",
+        on_change=_sync_symbol_from_input,
+    )
     user_input = (st.session_state.get("etf_symbol") or "").strip()
     if not user_input:
         st.info("請輸入 ETF 名稱或代碼以查詢。")
@@ -61,7 +68,8 @@ def show(prefill_symbol: str | None = None) -> None:
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
         st.subheader(f"{name or ticker}（{ticker}）")
 
-        col1, col2, col3, col4 = st.columns(4)
+        # ======= KPI：Beta 右邊加入 EPS(TTM) =======
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
             st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
@@ -74,10 +82,14 @@ def show(prefill_symbol: str | None = None) -> None:
         with col4:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
+        with col5:
+            st.metric("EPS (TTM)", _fmt2(stats.get("EPS_TTM")))
+            # 為避免誤解，這裡呈現 ETF 近四次配息合計；只顯示、不評分。
+            st.caption("ETF 近四次配息合計")
 
-        # === 精簡摘要（加入 Alpha） ===
+        # ======= 風險摘要（沿用）=======
         grades = {
-            "Alpha":  grade_alpha(stats.get("Alpha")),
+            "Alpha": grade_alpha(stats.get("Alpha")),
             "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
             "Treynor": grade_treynor(stats.get("Treynor")),
         }
@@ -89,7 +101,7 @@ def show(prefill_symbol: str | None = None) -> None:
         else:
             st.success("✅ 指標狀態良好。")
 
-        # ETF 專屬系統/非系統性風險提示（保留）
+        # ======= 系統/非系統性風險提示（沿用）=======
         sharpe = stats.get("Sharpe Ratio")
         treynor = stats.get("Treynor")
         non_sys_thr = float(st.session_state.get("non_sys_thr", 0.5))
@@ -98,6 +110,7 @@ def show(prefill_symbol: str | None = None) -> None:
         if msg:
             st.warning(msg)
 
+        # ======= 圖 =======
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
         madr = stats.get("MADR")
