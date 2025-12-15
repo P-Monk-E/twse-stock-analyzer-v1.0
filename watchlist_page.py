@@ -4,14 +4,13 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timedelta, date
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from stock_utils import get_metrics  # 專案既有：Alpha/Sharpe/Treynor/Beta/EPS(TTM)
+from stock_utils import get_metrics, is_etf as _is_etf  # 用現有工具判斷 ETF 與計算 KPI
 
 WATCHLIST_PATH = "watchlist.json"
 PORTFOLIO_PATH = "portfolio.json"
@@ -38,6 +37,7 @@ def load_watchlist() -> Dict[str, List[Dict[str, Any]]]:
     else:
         wl = _empty()
 
+    # 正規化
     for k in ("stocks", "etfs"):
         if k not in wl or not isinstance(wl[k], list):
             wl[k] = []
@@ -46,12 +46,13 @@ def load_watchlist() -> Dict[str, List[Dict[str, Any]]]:
             r.setdefault("name", r.get("symbol", ""))
             r.setdefault("added_at", datetime.now().isoformat(timespec="seconds"))
             r.setdefault("pinned", False)
-            # 舊版 key 平滑升級為中文
+            # 舊版英文字分組 -> 中文
             grp = r.get("group", "")
             if grp in ("defense", "core", "attack"):
                 r["group"] = {"defense": "防守型", "core": "主力", "attack": "進攻型"}[grp]
             else:
                 r["group"] = str(grp)
+
     st.session_state.watchlist = wl
     return wl
 
@@ -60,6 +61,75 @@ def save_watchlist() -> None:
         return
     with open(WATCHLIST_PATH, "w", encoding="utf-8") as f:
         json.dump(st.session_state.watchlist, f, ensure_ascii=False, indent=2)
+
+def _resolve_kind_and_symbol(
+    kind_or_symbol: str,
+    symbol_or_name: Optional[str] = None,
+    name: Optional[str] = None,
+    kind_kw: Optional[str] = None,
+) -> Tuple[str, str, Optional[str]]:
+    """
+    支援兩種呼叫：
+    1) add_to_watchlist("stock"|"etf", symbol, name)
+    2) add_to_watchlist(symbol, name=None, kind=None)
+    """
+    k = None
+    sym = None
+    nm = None
+
+    first = (kind_or_symbol or "").strip()
+    second = (symbol_or_name or "").strip() if symbol_or_name else None
+
+    if first.lower() in ("stock", "etf"):
+        # 介面 1
+        k = "etf" if first.lower() == "etf" else "stock"
+        sym = (second or "").upper()
+        nm = name or sym
+    else:
+        # 介面 2
+        sym = first.upper()
+        nm = (symbol_or_name or sym) if symbol_or_name else sym
+        k2 = (kind_kw or "").lower() if kind_kw else ""
+        if k2 in ("stock", "etf"):
+            k = k2
+        else:
+            # 自動判斷：工具函式 + 代碼前綴 00
+            try:
+                k = "etf" if (_is_etf(sym) or sym.startswith("00")) else "stock"
+            except Exception:
+                k = "etf" if sym.startswith("00") else "stock"
+
+    return k, sym, nm
+
+def add_to_watchlist(kind_or_symbol: str, symbol_or_name: Optional[str] = None,
+                     name: Optional[str] = None, *, kind: Optional[str] = None) -> None:
+    """
+    對外匯出：供 stocks_page / etf_page `from watchlist_page import add_to_watchlist` 使用。
+    兩種呼叫皆可：
+      - add_to_watchlist("stock"|"etf", symbol, name)
+      - add_to_watchlist(symbol, name=None, kind=None)  # kind 可省略讓程式自動判斷
+    """
+    wl = load_watchlist()
+    resolved_kind, sym, nm = _resolve_kind_and_symbol(kind_or_symbol, symbol_or_name, name, kind)
+    key = "etfs" if resolved_kind == "etf" else "stocks"
+
+    # 去重
+    exists = any(sym == r.get("symbol", "").upper() for r in wl[key])
+    if exists:
+        st.info("已在觀察名單中。")
+        return
+
+    wl[key].append(
+        {
+            "symbol": sym,
+            "name": nm or sym,
+            "added_at": datetime.now().isoformat(timespec="seconds"),
+            "pinned": False,
+            "group": "",  # 分組先留空，之後你可在 UI 選
+        }
+    )
+    save_watchlist()
+    st.success(f"已加入觀察名單：{sym}")
 
 def remove_from_watchlist(kind: str, symbols: List[str]) -> None:
     wl = load_watchlist()
@@ -157,7 +227,7 @@ def _score(alpha: Any, sharpe: Any) -> float:
         s = float(sharpe) if pd.notna(sharpe) else 0.0
         if (alpha is None or pd.isna(alpha)) and (sharpe is None or pd.isna(sharpe)):
             return -1e12
-        return 5.0 * a + 0.5 * s  # 新權重
+        return 5.0 * a + 0.5 * s  # 最新權重
     except Exception:
         return -1e12
 
