@@ -1,5 +1,6 @@
+# /mnt/data/portfolio_page.py
 # =========================================
-# /mnt/data/portfolio_page.py  （恢復「快速前往」超連結）
+# 我的庫存（整合版，加入「分組」欄並保留原功能）
 # =========================================
 from __future__ import annotations
 
@@ -20,7 +21,8 @@ REALIZED_PATH = "realized_trades.json"  # 已實現交易紀錄
 
 # ---------- Utils ----------
 def guess_is_etf(symbol: str) -> bool:
-    return symbol.strip().upper().startswith("00")  # 台灣 ETF 多為 00xxx（簡易判斷）
+    # 台灣 ETF 常見 00xxx；僅供「快速前往」預設頁籤判斷
+    return symbol.strip().upper().startswith("00")
 
 @st.cache_data(ttl=3600)
 def get_latest_price(symbol: str) -> Optional[float]:
@@ -311,8 +313,9 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         except Exception:
             return "—"
 
+    # ---- 新增持股（新增「分組」）----
     with st.expander("新增持股", expanded=True):
-        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+        c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
         with c1:
             sym = st.text_input("代碼（例：2330 或 2330.TW）", value=prefill_symbol or "", key="pf_add_sym")
         with c2:
@@ -321,11 +324,19 @@ def show(prefill_symbol: Optional[str] = None) -> None:
             cost = st.number_input("成本/股", min_value=0.0, value=100.0, step=0.1, key="pf_add_cost")
         with c4:
             buy_date = st.date_input("買入日", value=date.today(), key="pf_add_date")
+        with c5:
+            group = st.selectbox("分組", options=["", "防守型", "主力", "進攻型"], key="pf_add_group")
         if st.button("加入", type="primary"):
             if not sym.strip():
                 st.warning("請輸入代碼。")
             else:
-                data.append({"symbol": sym.strip(), "qty": int(qty), "cost": float(cost), "buy_date": buy_date.isoformat()})
+                data.append({
+                    "symbol": sym.strip().upper(),
+                    "qty": int(qty),
+                    "cost": float(cost),
+                    "buy_date": buy_date.isoformat(),
+                    "group": group,  # 中文分組；觀察名單的資金配置會直接讀取
+                })
                 _save_portfolio(); st.success("已加入。"); st.rerun()
 
     total_realized = sum(float(x.get("pnl", 0.0)) for x in realized)
@@ -352,6 +363,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
             {
                 "買入日": (row.get("buy_date") or "—"),
                 "代碼": sym,
+                "分組": row.get("group", ""),  # 顯示分組
                 "股數": qty,
                 "成本/股": cost,
                 "現價": price,
@@ -360,7 +372,6 @@ def show(prefill_symbol: Optional[str] = None) -> None:
                 "回報率%": rate_pct,
             }
         )
-        # ---- 快速前往連結（保留 .TW/.TWO 由接收頁自行處理）----
         nav = 'ETF' if guess_is_etf(sym) else '股票'
         links.append({"代碼": sym, "前往": f"./?nav={nav}&symbol={sym}"})
         principal += cost * qty
@@ -400,7 +411,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
     )
     st.dataframe(styled, use_container_width=True)
 
-    # ======== 快速前往（恢復連結區塊） ========
+    # ======== 快速前往（連結） ========
     st.caption("快速前往：")
     link_df = pd.DataFrame(links)
     st.data_editor(
@@ -414,7 +425,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         },
     )
 
-    # ======== 資產配置（市值占比） ========
+    # ======== 資產配置（市值占比；保留原邏輯） ========
     st.subheader("資產配置（市值占比）", anchor=False)
     alloc = (
         df[["代碼", "市值"]]
