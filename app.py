@@ -1,9 +1,14 @@
+# =========================================
+# /mnt/data/app.py  （加入「觀察名單」頁）
+# =========================================
 import streamlit as st
 import stocks_page
 import etf_page
 import portfolio_page
+import watchlist_page  # 新增
 
-PAGES = ["股票", "ETF", "庫存"]
+PAGES = ["股票", "ETF", "庫存", "觀察名單"]  # 新增頁籤
+# 以上改動以你現有檔案為基礎擴充。 :contentReference[oaicite:0]{index=0}
 
 def main() -> None:
     st.sidebar.header("主選單")
@@ -17,8 +22,10 @@ def main() -> None:
         stocks_page.show(prefill_symbol=q_symbol)
     elif nav == "ETF":
         etf_page.show(prefill_symbol=q_symbol)
-    else:
+    elif nav == "庫存":
         portfolio_page.show(prefill_symbol=q_symbol)
+    else:
+        watchlist_page.show()
 
 if __name__ == "__main__":
     main()
