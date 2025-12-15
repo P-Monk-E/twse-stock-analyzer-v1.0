@@ -1,4 +1,6 @@
-# /mnt/data/etf_page.py
+# =========================================
+# /mnt/data/etf_page.py  （右上角「＋加入觀察」+ EPS(TTM) KPI 已在檔內）
+# =========================================
 from __future__ import annotations
 
 import math
@@ -13,6 +15,8 @@ from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
 from portfolio_risk_utils import diversification_warning
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
 from chart_utils import plot_candlestick_with_ma
+from watchlist_page import add_to_watchlist  # 新增
+# 以你現有版本為基礎加上右上角按鈕。 :contentReference[oaicite:2]{index=2}
 
 def _sync_symbol_from_input() -> None:
     txt = (st.session_state.get("etf_symbol") or "").strip()
@@ -38,12 +42,8 @@ def show(prefill_symbol: str | None = None) -> None:
     st.header("📊 ETF 專區")
 
     default_symbol = st.query_params.get("symbol", prefill_symbol or "")
-    st.text_input(
-        "輸入 ETF 名稱或代碼（例：0050 / 0056 / 006208 / 00980A）",
-        value=default_symbol,
-        key="etf_symbol",
-        on_change=_sync_symbol_from_input,
-    )
+    st.text_input("輸入 ETF 名稱或代碼（例：0050 / 0056 / 006208 / 00980A）",
+                  value=default_symbol, key="etf_symbol", on_change=_sync_symbol_from_input)
     user_input = (st.session_state.get("etf_symbol") or "").strip()
     if not user_input:
         st.info("請輸入 ETF 名稱或代碼以查詢。")
@@ -66,49 +66,40 @@ def show(prefill_symbol: str | None = None) -> None:
             return
 
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
-        st.subheader(f"{name or ticker}（{ticker}）")
+        # ---- 標題 + 右上角加入觀察 ----
+        c1, c2 = st.columns([1, 0.15])
+        with c1:
+            st.subheader(f"{name or ticker}（{ticker}）")
+        with c2:
+            if st.button("＋ 加入觀察", key="btn_watch_etf"):
+                add_to_watchlist("etf", ticker, name or ticker)
 
-        # ======= KPI：Beta 右邊加入 EPS(TTM) =======
+        # ======= KPI（含 EPS TTM）=======
         col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
-            st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
-            st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
+            st.metric("Alpha(年化)", _fmt2(stats.get("Alpha"))); st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
         with col2:
-            st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe Ratio")))
-            st.caption(_tag(stats.get("Sharpe Ratio"), 1, True) + " >1 佳")
+            st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe Ratio"))); st.caption(_tag(stats.get("Sharpe Ratio"), 1, True) + " >1 佳")
         with col3:
-            st.metric("Treynor Ratio", _fmt2(stats.get("Treynor")))
-            st.caption("市場單位風險回報")
+            st.metric("Treynor Ratio", _fmt2(stats.get("Treynor"))); st.caption("市場單位風險回報")
         with col4:
-            st.metric("Beta", _fmt2(stats.get("Beta")))
-            st.caption("相對市場波動")
+            st.metric("Beta", _fmt2(stats.get("Beta"))); st.caption("相對市場波動")
         with col5:
-            st.metric("EPS (TTM)", _fmt2(stats.get("EPS_TTM")))
-            # 為避免誤解，這裡呈現 ETF 近四次配息合計；只顯示、不評分。
-            st.caption("ETF 近四次配息合計")
+            st.metric("EPS (TTM)", _fmt2(stats.get("EPS_TTM"))); st.caption("ETF 近四次配息合計")
 
-        # ======= 風險摘要（沿用）=======
-        grades = {
-            "Alpha": grade_alpha(stats.get("Alpha")),
-            "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
-            "Treynor": grade_treynor(stats.get("Treynor")),
-        }
+        # ======= 風險摘要 =======
+        grades = {"Alpha": grade_alpha(stats.get("Alpha")), "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")), "Treynor": grade_treynor(stats.get("Treynor"))}
         crit, warn, _ = summarize(grades)
-        if crit:
-            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
-        elif warn:
-            st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
-        else:
-            st.success("✅ 指標狀態良好。")
+        if crit: st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
+        elif warn: st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
+        else: st.success("✅ 指標狀態良好。")
 
-        # ======= 系統/非系統性風險提示（沿用）=======
-        sharpe = stats.get("Sharpe Ratio")
-        treynor = stats.get("Treynor")
-        non_sys_thr = float(st.session_state.get("non_sys_thr", 0.5))
-        sys_thr = float(st.session_state.get("sys_thr", 0.5))
-        msg = diversification_warning(sharpe, treynor, non_sys_thr=non_sys_thr, sys_thr=sys_thr)
-        if msg:
-            st.warning(msg)
+        # ======= 系統/非系統性風險提示 =======
+        from portfolio_risk_utils import diversification_warning
+        msg = diversification_warning(stats.get("Sharpe Ratio"), stats.get("Treynor"),
+                                      non_sys_thr=float(st.session_state.get("non_sys_thr", 0.5)),
+                                      sys_thr=float(st.session_state.get("sys_thr", 0.5)))
+        if msg: st.warning(msg)
 
         # ======= 圖 =======
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
