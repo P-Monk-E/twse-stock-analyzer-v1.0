@@ -110,12 +110,13 @@ def _fetch_metrics(symbol: str, is_etf: bool) -> Dict[str, Any]:
         return {}
 
 def _score(alpha: Any, sharpe: Any) -> float:
+    """Score = 5*Alpha + 0.5*Sharpe；缺值以 0 代入，兩者皆缺時給極小值。"""
     try:
         a = float(alpha) if pd.notna(alpha) else 0.0
         s = float(sharpe) if pd.notna(sharpe) else 0.0
         if (alpha is None or pd.isna(alpha)) and (sharpe is None or pd.isna(sharpe)):
             return -1e12
-        return 0.5 * a + 0.5 * s
+        return 5.0 * a + 0.5 * s
     except Exception:
         return -1e12
 
@@ -194,7 +195,7 @@ def _render_table(kind_key: str, is_etf_list: bool) -> None:
         stats = _fetch_metrics(sym, is_etf=is_etf_list)
         alpha = stats.get("Alpha"); sharpe = stats.get("Sharpe Ratio")
         beta = stats.get("Beta"); eps = stats.get("EPS_TTM")
-        score = _score(alpha, sharpe)
+        score_val = _score(alpha, sharpe)
 
         if is_etf_list:
             trey = stats.get("Treynor")
@@ -209,7 +210,7 @@ def _render_table(kind_key: str, is_etf_list: bool) -> None:
                 "Treynor": _fmt4(trey) + (" ❌" if fails["Treynor"] else ""),
                 "Beta": _fmt4(beta),
                 "EPS(TTM)": _fmt4(eps),
-                "Score": _fmt4(score),
+                "Score": _fmt4(score_val),
                 "前往": f"./?nav=ETF&symbol={sym}",
                 "🗑 刪除": False,
             })
@@ -228,7 +229,7 @@ def _render_table(kind_key: str, is_etf_list: bool) -> None:
                 "負債權益比": _fmt4(de) + (" ❌" if fails["負債權益比"] else ""),
                 "流動比率": _fmt4(cr) + (" ❌" if fails["流動比率"] else ""),
                 "ROE": _fmt2pct(roe) + (" ❌" if fails["ROE"] else ""),
-                "Score": _fmt4(score),
+                "Score": _fmt4(score_val),
                 "前往": f"./?nav=股票&symbol={sym}",
                 "🗑 刪除": False,
             })
@@ -256,7 +257,7 @@ def _render_table(kind_key: str, is_etf_list: bool) -> None:
         "Sharpe": st.column_config.TextColumn("Sharpe"),
         "Beta": st.column_config.TextColumn("Beta"),
         "EPS(TTM)": st.column_config.TextColumn("EPS(TTM)"),
-        "Score": st.column_config.TextColumn("Score"),
+        "Score": st.column_config.TextColumn("Score", help="Score = 5×Alpha + 0.5×Sharpe"),
         "前往": st.column_config.LinkColumn("前往"),
         "🗑 刪除": st.column_config.CheckboxColumn("🗑 刪除", help="勾選後點下方『刪除選取』"),
     }
