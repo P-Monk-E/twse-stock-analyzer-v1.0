@@ -11,13 +11,17 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from stock_utils import get_metrics  # 使用專案既有的 KPI 計算
+from stock_utils import get_metrics  # 專案既有：計算 Alpha/Sharpe/Treynor/Beta/EPS(TTM)
 
 WATCHLIST_PATH = "watchlist.json"
 PORTFOLIO_PATH = "portfolio.json"
 
+# 建議比例（中文）
+RECO = {"防守型": 0.30, "主力": 0.50, "進攻型": 0.20}
+TOL = 0.025  # 容許 ±2.5%
+
 # =========================
-# Storage
+# 儲存（觀察名單）
 # =========================
 def _empty() -> Dict[str, List[Dict[str, Any]]]:
     return {"stocks": [], "etfs": []}
@@ -42,7 +46,12 @@ def load_watchlist() -> Dict[str, List[Dict[str, Any]]]:
             r.setdefault("name", r.get("symbol", ""))
             r.setdefault("added_at", datetime.now().isoformat(timespec="seconds"))
             r.setdefault("pinned", False)
-
+            # 分組改為中文（防守型/主力/進攻型/空白）
+            grp = r.get("group", "")
+            if grp in ("defense", "core", "attack"):  # 舊值平滑升級
+                r["group"] = {"defense": "防守型", "core": "主力", "attack": "進攻型"}[grp]
+            else:
+                r["group"] = str(grp)
     st.session_state.watchlist = wl
     return wl
 
@@ -61,7 +70,11 @@ def add_to_watchlist(kind: str, symbol: str, name: str) -> None:
     s = symbol.strip().upper()
     if any(s == x.get("symbol", "").upper() for x in wl[key]):
         st.info("已在觀察名單中。"); return
-    wl[key].append({"symbol": s, "name": name or s, "added_at": datetime.now().isoformat(timespec="seconds"), "pinned": False})
+    wl[key].append({
+        "symbol": s, "name": name or s,
+        "added_at": datetime.now().isoformat(timespec="seconds"),
+        "pinned": False, "group": ""
+    })
     save_watchlist(); st.success("已加入觀察名單。")
 
 def remove_from_watchlist(kind: str, symbols: List[str]) -> None:
@@ -72,7 +85,7 @@ def remove_from_watchlist(kind: str, symbols: List[str]) -> None:
     save_watchlist(); st.success("已刪除所選項目。")
 
 # =========================
-# Portfolio I/O（供加入庫存）
+# 儲存（庫存，同步）
 # =========================
 def _load_portfolio() -> List[Dict[str, Any]]:
     if "portfolio" in st.session_state and isinstance(st.session_state.portfolio, list):
@@ -94,8 +107,60 @@ def _save_portfolio() -> None:
     except Exception as e:
         st.warning(f"寫入 {PORTFOLIO_PATH} 失敗：{e}")
 
+# 取最新價（簡易容錯，30 分鐘快取）
+@st.cache_data(ttl=1800)
+def get_latest_price(symbol: str) -> float | None:
+    s = symbol.strip().upper()
+    cands = [s] if s.endswith((".TW", ".TWO")) else [f"{s}.TW", f"{s}.TWO"]
+    for c in cands:
+        try:
+            p = yf.Ticker(c).fast_info.get("lastPrice")
+            if p: return float(p)
+        except Exception:
+            pass
+        try:
+            hist = yf.Ticker(c).history(period="1d")
+            if not hist.empty: return float(hist["Close"].iloc[-1])
+        except Exception:
+            pass
+    return None
+
+# 以「市值占比」計算三組目前配置（優先使用庫存中的分組，否則回退觀察名單分組）
+def compute_group_allocation(wl: Dict[str, List[Dict[str, Any]]]) -> Dict[str, float]:
+    positions = _load_portfolio()
+    if not positions:
+        return {"防守型": 0.0, "主力": 0.0, "進攻型": 0.0}
+
+    # 觀察名單分組 map（中文）
+    wl_map: Dict[str, str] = {}
+    for k in ("stocks", "etfs"):
+        for r in wl.get(k, []):
+            wl_map[str(r.get("symbol")).upper()] = str(r.get("group", ""))
+
+    rows = []
+    for p in positions:
+        sym = str(p.get("symbol")).upper()
+        qty = float(p.get("qty", 0))
+        price = get_latest_price(sym) or 0.0
+        mv = price * qty
+        grp = str(p.get("group", "")).strip() or wl_map.get(sym, "")
+        if grp in RECO and mv > 0:
+            rows.append({"group": grp, "mv": mv})
+
+    if not rows:
+        return {"防守型": 0.0, "主力": 0.0, "進攻型": 0.0}
+
+    df = pd.DataFrame(rows).groupby("group", as_index=False)["mv"].sum()
+    total = float(df["mv"].sum())
+    result = {"防守型": 0.0, "主力": 0.0, "進攻型": 0.0}
+    if total <= 0:
+        return result
+    for _, r in df.iterrows():
+        result[str(r["group"])] = float(r["mv"]) / total
+    return result
+
 # =========================
-# KPI helpers
+# KPI/排序/標示
 # =========================
 @st.cache_data(ttl=1800)
 def _fetch_metrics(symbol: str, is_etf: bool) -> Dict[str, Any]:
@@ -110,12 +175,10 @@ def _fetch_metrics(symbol: str, is_etf: bool) -> Dict[str, Any]:
         return {}
 
 def _score(alpha: Any, sharpe: Any) -> float:
-    """Score = 5*Alpha + 0.5*Sharpe；缺值以 0 代入，兩者皆缺時給極小值。"""
     try:
         a = float(alpha) if pd.notna(alpha) else 0.0
         s = float(sharpe) if pd.notna(sharpe) else 0.0
-        if (alpha is None or pd.isna(alpha)) and (sharpe is None or pd.isna(sharpe)):
-            return -1e12
+        if (alpha is None or pd.isna(alpha)) and (sharpe is None or pd.isna(sharpe)): return -1e12
         return 5.0 * a + 0.5 * s
     except Exception:
         return -1e12
@@ -134,7 +197,6 @@ def _fmt2pct(x: Any) -> str:
     except Exception:
         return "—"
 
-# 未達標規則
 def _fails_stock(alpha, sharpe, de, cr, roe) -> Dict[str, bool]:
     return {
         "Alpha": (pd.notna(alpha) and float(alpha) < 0),
@@ -152,7 +214,7 @@ def _fails_etf(alpha, sharpe, treynor) -> Dict[str, bool]:
     }
 
 # =========================
-# Confirm dialog（刪除 / 加入庫存）
+# 確認視窗：刪除／加入庫存
 # =========================
 def _render_confirm() -> None:
     info = st.session_state.get("wl_confirm")
@@ -161,7 +223,7 @@ def _render_confirm() -> None:
     if info["type"] == "delete":
         st.write(f"刪除【{ 'ETF' if info['kind']=='etf' else '股票' }】：{', '.join(info['symbols'])}")
     elif info["type"] == "add_portfolio":
-        st.write(f"加入庫存：代碼 {info['symbol']}｜股數 {info['qty']}｜成本/股 {info['cost']}｜日期 {info['date']}")
+        st.write(f"加入庫存：代碼 {info['symbol']}｜股數 {info['qty']}｜成本/股 {info['cost']}｜日期 {info['date']}｜分組 {info.get('group','') or '（未分組）'}")
     c1, c2 = st.columns(2)
     with c1:
         if st.button("✅ 確認執行", key="wl_ok"):
@@ -170,7 +232,13 @@ def _render_confirm() -> None:
                     remove_from_watchlist(info["kind"], info["symbols"])
                 else:
                     data = _load_portfolio()
-                    data.append({"symbol": info["symbol"], "qty": int(info["qty"]), "cost": float(info["cost"]), "buy_date": info["date"]})
+                    data.append({
+                        "symbol": info["symbol"],
+                        "qty": int(info["qty"]),
+                        "cost": float(info["cost"]),
+                        "buy_date": info["date"],
+                        "group": info.get("group", ""),  # 中文分組
+                    })
                     _save_portfolio()
                     st.success("已加入庫存。")
             finally:
@@ -180,15 +248,14 @@ def _render_confirm() -> None:
             st.session_state.pop("wl_confirm", None); st.info("已取消。"); st.rerun()
 
 # =========================
-# Render section（表格在內部完成釘選、超連結、刪除）
+# 觀察名單表格（釘選/刪除/連結/KPI）
 # =========================
-def _render_table(kind_key: str, is_etf_list: bool) -> None:
+def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
     wl = load_watchlist()
     rows = wl[kind_key]
     if not rows:
         st.info("目前沒有項目。"); return
 
-    # 蒐集 KPI 並組裝列
     out: List[Dict[str, Any]] = []
     for r in rows:
         sym = r["symbol"].upper()
@@ -235,19 +302,15 @@ def _render_table(kind_key: str, is_etf_list: bool) -> None:
             })
 
     df = pd.DataFrame(out)
-
-    # 排序：釘選置頂 → Score 高到低 → 代碼
+    # 排序：釘選置頂 → Score 高 → 代碼
     def _to_float(s: str) -> float:
-        try:
-            return float(s)
-        except Exception:
-            return -1e12
+        try: return float(s)
+        except Exception: return -1e12
     df["pin_order"] = df["釘選"].apply(lambda x: 1 if x else 0)
     df["score_order"] = df["Score"].apply(_to_float)
     df.sort_values(by=["pin_order", "score_order", "代碼"], ascending=[False, False, True], inplace=True, kind="mergesort")
     df.drop(columns=["pin_order", "score_order"], inplace=True)
 
-    # —— 用 data_editor：表格內直接「釘選切換」與「刪除勾選」，「前往」為 LinkColumn —— 
     column_config = {
         "釘選": st.column_config.CheckboxColumn("釘選", help="切換釘選（變更即自動存檔）"),
         "狀態": st.column_config.TextColumn("狀態", disabled=True),
@@ -259,45 +322,119 @@ def _render_table(kind_key: str, is_etf_list: bool) -> None:
         "EPS(TTM)": st.column_config.TextColumn("EPS(TTM)"),
         "Score": st.column_config.TextColumn("Score", help="Score = 5×Alpha + 0.5×Sharpe"),
         "前往": st.column_config.LinkColumn("前往"),
-        "🗑 刪除": st.column_config.CheckboxColumn("🗑 刪除", help="勾選後點下方『刪除選取』"),
+        "🗑 刪除": st.column_config.CheckboxColumn("🗑 刪除", help="勾選後按下方『刪除選取』"),
     }
     if is_etf_list:
         column_config["Treynor"] = st.column_config.TextColumn("Treynor")
-        display_cols = ["釘選", "狀態", "代碼", "名稱", "Alpha", "Sharpe", "Treynor", "Beta", "EPS(TTM)", "Score", "前往", "🗑 刪除"]
+        display_cols = ["釘選","狀態","代碼","名稱","Alpha","Sharpe","Treynor","Beta","EPS(TTM)","Score","前往","🗑 刪除"]
     else:
-        for col in ("負債權益比", "流動比率", "ROE"):
+        for col in ("負債權益比","流動比率","ROE"):
             column_config[col] = st.column_config.TextColumn(col)
-        display_cols = ["釘選", "狀態", "代碼", "名稱", "Alpha", "Sharpe", "Beta", "EPS(TTM)", "負債權益比", "流動比率", "ROE", "Score", "前往", "🗑 刪除"]
+        display_cols = ["釘選","狀態","代碼","名稱","Alpha","Sharpe","Beta","EPS(TTM)","負債權益比","流動比率","ROE","Score","前往","🗑 刪除"]
 
     edited = st.data_editor(
-        df[display_cols],
-        use_container_width=True,
-        hide_index=True,
-        column_config=column_config,
-        key=f"editor_{kind_key}",
+        df[display_cols], use_container_width=True, hide_index=True,
+        column_config=column_config, key=f"editor_{kind_key}",
     )
 
-    # —— 自動存檔：釘選變動即寫檔 —— 
+    # 釘選變更 → 自動存檔
     new_pin_map = {row["代碼"]: bool(row["釘選"]) for _, row in edited.iterrows()}
     changed = False
     for r in st.session_state.watchlist[kind_key]:
         new_pin = new_pin_map.get(r["symbol"].upper(), r.get("pinned", False))
         if bool(r.get("pinned", False)) != bool(new_pin):
-            r["pinned"] = bool(new_pin)
-            changed = True
+            r["pinned"] = bool(new_pin); changed = True
     if changed:
-        save_watchlist()
-        st.caption("✅ 釘選變更已自動存檔。")
+        save_watchlist(); st.caption("✅ 釘選變更已自動存檔。")
 
-    # —— 刪除（表格最後一欄勾選 + 二次確認） —— 
+    # 刪除
     to_delete = [row["代碼"] for _, row in edited.iterrows() if bool(row["🗑 刪除"])]
     c1, c2 = st.columns([1, 1])
     with c1:
         if st.button("刪除選取", key=f"btn_del_{kind_key}", type="secondary", disabled=(len(to_delete) == 0)):
-            st.session_state["wl_confirm"] = {"type": "delete", "kind": ("etf" if is_etf_list else "stock"), "symbols": to_delete}
+            st.session_state["wl_confirm"] = {"type":"delete","kind":("etf" if is_etf_list else "stock"),"symbols":to_delete}
     with c2:
         if st.button("重新整理 KPI（清快取）", key=f"btn_refresh_{kind_key}"):
             _fetch_metrics.clear(); st.rerun()
+
+# =========================
+# 快速存取 + 分組（中文） + 資金配置線條圖
+# =========================
+def _render_quick_and_groups() -> None:
+    st.subheader("⚡ 快速存取（同步庫存）與策略分組 / 資金配置", anchor=False)
+    wl = load_watchlist()
+
+    # 快速存取（含分組）
+    all_syms = [r["symbol"] for k in ("stocks","etfs") for r in wl[k]]
+    c1, c2, c3, c4, c5, c6 = st.columns([1.2,1,1,1,1,1.4])
+    with c1:
+        sel = st.selectbox("股票/ETF", options=all_syms, key="qa_sym")
+    with c2:
+        qty = st.number_input("股數", min_value=1, value=100, step=1, key="qa_qty")
+    with c3:
+        cost = st.number_input("成本/股", min_value=0.0, value=0.0, step=0.0001, key="qa_cost")
+    with c4:
+        dt = st.date_input("日期", value=date.today(), key="qa_date")
+    with c5:
+        grp = st.selectbox("分組", options=["", "防守型", "主力", "進攻型"], key="qa_group")
+    with c6:
+        if st.button("＋ 快速存取（需確認）", key="qa_btn"):
+            st.session_state["wl_confirm"] = {
+                "type":"add_portfolio","symbol":sel,"qty":int(qty),
+                "cost":float(cost),"date":dt.isoformat(),"group":grp
+            }
+
+    st.markdown("---")
+
+    # 分組編輯表（中文，下拉、即時存檔）
+    st.caption("分組設定（中文）：防守型 / 主力 / 進攻型")
+    rows = []
+    for k in ("stocks","etfs"):
+        for r in wl[k]:
+            rows.append({"代碼": r["symbol"], "名稱": r["name"], "分組": r.get("group","")})
+    gdf = pd.DataFrame(rows)
+    edited = st.data_editor(
+        gdf, hide_index=True, use_container_width=True,
+        column_config={
+            "代碼": st.column_config.TextColumn("代碼", disabled=True),
+            "名稱": st.column_config.TextColumn("名稱", disabled=True),
+            "分組": st.column_config.SelectboxColumn("分組", options=["","防守型","主力","進攻型"]),
+        },
+        key="group_editor",
+    )
+    group_map = {r["代碼"]: r["分組"] for _, r in edited.iterrows()}
+    changed = False
+    for k in ("stocks","etfs"):
+        for r in st.session_state.watchlist[k]:
+            newg = group_map.get(r["symbol"], r.get("group",""))
+            if str(newg) != str(r.get("group","")):
+                r["group"] = str(newg); changed = True
+    if changed:
+        save_watchlist(); st.caption("✅ 分組變更已自動存檔。")
+
+    # 目前配置（依庫存市值）與建議配置 → 線條圖 + 文本差值 + 警告
+    alloc = compute_group_allocation(st.session_state.watchlist)  # {'防守型':x, '主力':y, '進攻型':z}
+    idx = ["防守型","主力","進攻型"]
+    df_chart = pd.DataFrame({
+        "建議": [RECO[i]*100 for i in idx],
+        "目前": [alloc[i]*100 for i in idx],
+    }, index=idx)
+    st.line_chart(df_chart, use_container_width=True)  # 兩條線：建議/目前
+
+    def _line(name: str) -> str:
+        cur = alloc[name]; reco = RECO[name]; diff = cur - reco
+        tag = ""
+        if cur < (reco - TOL): tag = "（不足）"
+        elif cur > (reco + TOL): tag = "（過多）"
+        return f"**{name}**：建議 {reco*100:.1f}%｜目前 {cur*100:.2f}%｜差 {diff*100:+.2f}% {tag}"
+    st.info("｜".join([_line(x) for x in idx]))
+
+    warns = []
+    if alloc["防守型"] < RECO["防守型"] - TOL: warns.append("防守型不足")
+    if alloc["主力"] > RECO["主力"] + TOL:     warns.append("主力過多")
+    if alloc["進攻型"] > RECO["進攻型"] + TOL: warns.append("進攻型過多")
+    if warns:
+        st.warning("；".join(warns) + "。")
 
 # =========================
 # Page entry
@@ -306,10 +443,11 @@ def show() -> None:
     st.header("👀 觀察名單")
     load_watchlist()
 
-    tab_stock, tab_etf = st.tabs(["待觀察股票", "待觀察ETF"])  # 單一橫列：節省空間
+    tab_stock, tab_etf = st.tabs(["待觀察股票", "待觀察ETF"])
     with tab_stock:
-        _render_table("stocks", is_etf_list=False)
+        _render_watch_table("stocks", is_etf_list=False)
     with tab_etf:
-        _render_table("etfs", is_etf_list=True)
+        _render_watch_table("etfs", is_etf_list=True)
 
+    _render_quick_and_groups()
     _render_confirm()
