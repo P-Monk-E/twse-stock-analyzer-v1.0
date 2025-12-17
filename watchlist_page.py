@@ -16,7 +16,7 @@ from stock_utils import get_metrics, is_etf as _is_etf
 from names_store import get as get_name_override, set as set_name_override
 
 WATCHLIST_PATH = "watchlist.json"
-PORTFOLIO_PATH = "portfolio.json"  # duplicated with quick access section below
+PORTFOLIO_PATH = "portfolio.json"
 
 # ---------- 基本儲存 ----------
 def _ensure_state():
@@ -24,6 +24,9 @@ def _ensure_state():
         st.session_state.watchlist = {"stocks": [], "etfs": []}
     if not isinstance(st.session_state.watchlist, dict):
         st.session_state.watchlist = {"stocks": [], "etfs": []}
+    # KPI cache version（強制失效重算用）
+    if "KPI_VERSION" not in st.session_state:
+        st.session_state.KPI_VERSION = 1
 
 def load_watchlist() -> Dict[str, List[Dict[str, Any]]]:
     _ensure_state()
@@ -50,11 +53,6 @@ def save_watchlist() -> None:
 
 # ---------- 對外 API ----------
 def add_to_watchlist(kind: str, symbol: str, name: Optional[str] = None) -> None:
-    """
-    kind: 'stock' or 'etf'
-    symbol: 代碼
-    name: 顯示名稱（可空，會以 names_store 覆寫）
-    """
     load_watchlist()
     sym = (symbol or "").strip().upper()
     if not sym:
@@ -63,12 +61,9 @@ def add_to_watchlist(kind: str, symbol: str, name: Optional[str] = None) -> None
 
     kind_key = "etfs" if (kind == "etf" or _is_etf(sym) or sym.startswith("00")) else "stocks"
     target = st.session_state.watchlist[kind_key]
-
-    # 去重
-    for r in target:
-        if (r.get("symbol", "").upper() == sym):
-            st.info("已在觀察名單中。")
-            return
+    if any((r.get("symbol", "").upper() == sym) for r in target):
+        st.info("已在觀察名單中。")
+        return
 
     nm = (name or get_name_override(sym, sym)).strip()
     target.append({
@@ -78,27 +73,18 @@ def add_to_watchlist(kind: str, symbol: str, name: Optional[str] = None) -> None
         "added_at": datetime.now().isoformat(timespec="seconds")
     })
     save_watchlist()
-    # 同步覆寫表
     try:
         set_name_override(sym, nm or sym)
     except Exception:
         pass
     st.success(f"已加入觀察：{sym}")
 
-# ---------- KPI 快取 ----------
+# ---------- KPI 快取（以版本控制強制刷新） ----------
 @st.cache_data(ttl=1800, show_spinner=False)
-def _calc_score(alpha: Optional[float], sharpe: Optional[float]) -> float:
-    a = 0.0 if (alpha is None or np.isnan(alpha)) else float(alpha)
-    s = 0.0 if (sharpe is None or np.isnan(sharpe)) else float(sharpe)
-    return 5 * a + 0.5 * s
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def _metrics_for(sym: str, is_etf: bool) -> Dict[str, Any]:
+def _metrics_for(sym: str, is_etf: bool, version: int) -> Dict[str, Any]:
     try:
-        stats = get_metrics(sym, None, None, None, None, is_etf=is_etf)  # 函式本身會處理預設期間
-        if not stats:
-            return {}
-        return {
+        stats = get_metrics(sym, None, None, None, None, is_etf=is_etf)
+        return {} if not stats else {
             "Alpha": stats.get("Alpha"),
             "Sharpe": stats.get("Sharpe"),
             "Treynor": stats.get("Treynor"),
@@ -109,10 +95,15 @@ def _metrics_for(sym: str, is_etf: bool) -> Dict[str, Any]:
     except Exception:
         return {}
 
+def _calc_score(alpha: Optional[float], sharpe: Optional[float]) -> float:
+    a = 0.0 if (alpha is None or (isinstance(alpha, float) and np.isnan(alpha))) else float(alpha)
+    s = 0.0 if (sharpe is None or (isinstance(sharpe, float) and np.isnan(sharpe))) else float(sharpe)
+    return 5 * a + 0.5 * s
+
 def _refresh_metrics():
-    _calc_score.clear()
-    _metrics_for.clear()
+    st.session_state.KPI_VERSION += 1  # 改變版本 → 所有 cache 自動失效
     st.toast("KPI 已重新整理")
+    st.rerun()
 
 # ---------- 表格渲染 ----------
 def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
@@ -123,11 +114,11 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
         return
 
     rows = []
+    ver = st.session_state.KPI_VERSION  # 讀取目前版本
     for r in data:
         sym = r.get("symbol", "").upper()
-        # 名稱覆寫：以 names_store 優先，無則使用清單儲存的 name
         name = get_name_override(sym, r.get("name", sym))
-        met = _metrics_for(sym, is_etf_list)
+        met = _metrics_for(sym, is_etf_list, ver)  # ← 加入版本參數
         rows.append({
             "釘選": bool(r.get("pinned", False)),
             "代碼": sym,
@@ -138,14 +129,12 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
             "Beta": met.get("Beta"),
             "EPS(TTM)": met.get("EPS_TTM"),
             "Score": met.get("Score"),
-            "前往": f"./?nav={'ETF' if is_etf_list else '股票'}&symbol={sym}",
+            "快速前往": f"./?nav={'ETF' if is_etf_list else '股票'}&symbol={sym}",
         })
 
     df = pd.DataFrame(rows)
-    # 排序：釘選優先、Score 次之
     df = df.sort_values(by=["釘選", "Score"], ascending=[False, False], kind="mergesort").reset_index(drop=True)
 
-    # 可編輯欄位：釘選、名稱；其餘只讀
     column_config = {
         "釘選": st.column_config.CheckboxColumn("釘選"),
         "代碼": st.column_config.TextColumn("代碼"),
@@ -156,9 +145,9 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
         "Beta": st.column_config.NumberColumn("Beta", format="%.2f"),
         "EPS(TTM)": st.column_config.NumberColumn("EPS(TTM)", format="%.2f"),
         "Score": st.column_config.NumberColumn("Score", format="%.2f"),
-        "前往": st.column_config.LinkColumn("快速前往"),
+        "快速前往": st.column_config.LinkColumn("快速前往"),
     }
-    display_cols = [c for c in ["釘選","代碼","名稱","Alpha","Sharpe","Treynor","Beta","EPS(TTM)","Score","前往"] if c in df.columns]
+    display_cols = [c for c in ["釘選","代碼","名稱","Alpha","Sharpe","Treynor","Beta","EPS(TTM)","Score","快速前往"] if c in df.columns]
     edited = st.data_editor(
         df[display_cols],
         use_container_width=True,
@@ -167,7 +156,6 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
         key=f"editor_{kind_key}",
     )
 
-    # 偵測釘選/名稱變更 → 寫回 watchlist.json 與 names.json
     pin_map  = {row["代碼"]: bool(row["釘選"]) for _, row in edited.iterrows()}
     name_map = {row["代碼"]: str(row["名稱"]).strip() for _, row in edited.iterrows()}
 
@@ -185,7 +173,7 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
             r["name"] = new_name
             changed = True
             try:
-                set_name_override(sym, new_name)  # 與三頁同步
+                set_name_override(sym, new_name)
             except Exception:
                 pass
 
@@ -198,20 +186,17 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
     with c1:
         if st.button("重新整理 KPI", key=f"refresh_{kind_key}"):
             _refresh_metrics()
-            st.experimental_rerun()
     with c2:
         to_delete = st.text_input("刪除代碼（逗號分隔）", key=f"del_{kind_key}")
         if st.button("刪除選取", key=f"btn_del_{kind_key}"):
             dels = {s.strip().upper() for s in to_delete.split(",") if s.strip()}
             st.session_state.watchlist[kind_key] = [r for r in st.session_state.watchlist[kind_key] if r.get("symbol","").upper() not in dels]
             save_watchlist()
-            st.experimental_rerun()
+            st.rerun()
     with c3:
         st.caption("提示：直接在表格編輯「名稱」，關閉編輯即自動比較並儲存。")
 
-# ---------- 快速存入庫存（簡化版） ----------
-PORTFOLIO_PATH = "portfolio.json"
-
+# -------- 快速存取/配置（原有內容保留） --------
 def _load_portfolio() -> Dict[str, Any]:
     if os.path.exists(PORTFOLIO_PATH):
         try:
@@ -254,7 +239,7 @@ def _render_quick_and_alloc() -> None:
         nm = name.strip() or get_name_override(sym, sym)
         _quick_add_position(sym, nm, qty, cost, group)
         try:
-            set_name_override(sym, nm)  # 也同步名稱
+            set_name_override(sym, nm)
         except Exception:
             pass
 
@@ -263,7 +248,6 @@ def _render_quick_and_alloc() -> None:
     st.progress(min(100, alloc["防守型"]), text=f"防守型 {alloc['防守型']}%")
     st.progress(min(100, alloc["主力"]), text=f"主力 {alloc['主力']}%")
     st.progress(min(100, alloc["進攻型"]), text=f"進攻型 {alloc['進攻型']}%")
-
     RECO = {"防守型": 40, "主力": 40, "進攻型": 20}
     TOL  = 5
     warns = []
@@ -280,9 +264,5 @@ def show() -> None:
     with tab_stock: _render_watch_table("stocks", is_etf_list=False)
     with tab_etf:   _render_watch_table("etfs",   is_etf_list=True)
     _render_quick_and_alloc()
-    _render_confirm()
-
-# ---------- 彈窗（保留擴充接口） ----------
-def _render_confirm() -> None:
     with st.expander("操作確認/歷史紀錄", expanded=False):
         st.caption("此區預留擴充：顯示最近操作歷程與確認訊息。")
