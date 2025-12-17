@@ -1,6 +1,4 @@
-# =========================================
 # /mnt/data/watchlist_page.py
-# =========================================
 from __future__ import annotations
 
 import json
@@ -18,13 +16,10 @@ from names_store import get as get_name_override, set as set_name_override
 WATCHLIST_PATH = "watchlist.json"
 PORTFOLIO_PATH = "portfolio.json"
 
-# ---------- 基本儲存 ----------
+# ---------- watchlist storage ----------
 def _ensure_state():
-    if "watchlist" not in st.session_state:
+    if "watchlist" not in st.session_state or not isinstance(st.session_state.watchlist, dict):
         st.session_state.watchlist = {"stocks": [], "etfs": []}
-    if not isinstance(st.session_state.watchlist, dict):
-        st.session_state.watchlist = {"stocks": [], "etfs": []}
-    # KPI cache version（強制失效重算用）
     if "KPI_VERSION" not in st.session_state:
         st.session_state.KPI_VERSION = 1
 
@@ -34,12 +29,12 @@ def load_watchlist() -> Dict[str, List[Dict[str, Any]]]:
         try:
             with open(WATCHLIST_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if not isinstance(data, dict):
-                    data = {"stocks": [], "etfs": []}
-                data.setdefault("stocks", [])
-                data.setdefault("etfs", [])
-                st.session_state.watchlist = data
-                st.session_state.watchlist["_loaded"] = True
+            if not isinstance(data, dict):
+                data = {"stocks": [], "etfs": []}
+            data.setdefault("stocks", [])
+            data.setdefault("etfs", [])
+            st.session_state.watchlist = data
+            st.session_state.watchlist["_loaded"] = True
         except Exception:
             st.session_state.watchlist = {"stocks": [], "etfs": [], "_loaded": True}
     return st.session_state.watchlist
@@ -51,35 +46,25 @@ def save_watchlist() -> None:
     with open(WATCHLIST_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ---------- 對外 API ----------
+# ---------- public API ----------
 def add_to_watchlist(kind: str, symbol: str, name: Optional[str] = None) -> None:
     load_watchlist()
     sym = (symbol or "").strip().upper()
     if not sym:
         st.warning("缺少代碼")
         return
-
     kind_key = "etfs" if (kind == "etf" or _is_etf(sym) or sym.startswith("00")) else "stocks"
     target = st.session_state.watchlist[kind_key]
-    if any((r.get("symbol", "").upper() == sym) for r in target):
-        st.info("已在觀察名單中。")
-        return
-
+    if any((r.get("symbol","").upper()==sym) for r in target):
+        st.info("已在觀察名單中。"); return
     nm = (name or get_name_override(sym, sym)).strip()
-    target.append({
-        "symbol": sym,
-        "name": nm or sym,
-        "pinned": False,
-        "added_at": datetime.now().isoformat(timespec="seconds")
-    })
+    target.append({"symbol": sym, "name": nm or sym, "pinned": False, "added_at": datetime.now().isoformat(timespec="seconds")})
     save_watchlist()
-    try:
-        set_name_override(sym, nm or sym)
-    except Exception:
-        pass
+    try: set_name_override(sym, nm or sym)
+    except Exception: pass
     st.success(f"已加入觀察：{sym}")
 
-# ---------- KPI 快取（以版本控制強制刷新） ----------
+# ---------- KPI cache (versioned) ----------
 @st.cache_data(ttl=1800, show_spinner=False)
 def _metrics_for(sym: str, is_etf: bool, version: int) -> Dict[str, Any]:
     try:
@@ -101,11 +86,42 @@ def _calc_score(alpha: Optional[float], sharpe: Optional[float]) -> float:
     return 5 * a + 0.5 * s
 
 def _refresh_metrics():
-    st.session_state.KPI_VERSION += 1  # 改變版本 → 所有 cache 自動失效
+    st.session_state.KPI_VERSION += 1
     st.toast("KPI 已重新整理")
     st.rerun()
 
-# ---------- 表格渲染 ----------
+# ---------- portfolio I/O (純陣列；向下相容讀 dict.positions) ----------
+def _load_portfolio() -> List[Dict[str, Any]]:
+    if os.path.exists(PORTFOLIO_PATH):
+        try:
+            with open(PORTFOLIO_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict) and isinstance(data.get("positions"), list):
+                return list(data.get("positions", []))  # 相容舊檔
+        except Exception:
+            pass
+    return []
+
+def _save_portfolio(lst: List[Dict[str, Any]]) -> None:
+    with open(PORTFOLIO_PATH, "w", encoding="utf-8") as f:
+        json.dump(lst, f, ensure_ascii=False, indent=2)
+
+def _quick_add_position(symbol: str, name: str, qty: float, cost: float, group: str) -> None:
+    data = _load_portfolio()
+    data.append({
+        "symbol": symbol.upper(),
+        "qty": float(qty),
+        "cost": float(cost),
+        "buy_date": datetime.now().strftime("%Y-%m-%d"),
+        "group": group or "",
+        "name": name,
+    })
+    _save_portfolio(data)
+    st.toast("已寫入庫存（已使用純陣列格式）")
+
+# ---------- table render ----------
 def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
     load_watchlist()
     data = st.session_state.watchlist.get(kind_key, [])
@@ -114,11 +130,11 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
         return
 
     rows = []
-    ver = st.session_state.KPI_VERSION  # 讀取目前版本
+    ver = st.session_state.KPI_VERSION
     for r in data:
         sym = r.get("symbol", "").upper()
         name = get_name_override(sym, r.get("name", sym))
-        met = _metrics_for(sym, is_etf_list, ver)  # ← 加入版本參數
+        met = _metrics_for(sym, is_etf_list, ver)
         rows.append({
             "釘選": bool(r.get("pinned", False)),
             "代碼": sym,
@@ -132,8 +148,7 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
             "快速前往": f"./?nav={'ETF' if is_etf_list else '股票'}&symbol={sym}",
         })
 
-    df = pd.DataFrame(rows)
-    df = df.sort_values(by=["釘選", "Score"], ascending=[False, False], kind="mergesort").reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values(by=["釘選","Score"], ascending=[False, False], kind="mergesort").reset_index(drop=True)
 
     column_config = {
         "釘選": st.column_config.CheckboxColumn("釘選"),
@@ -149,9 +164,7 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
     }
     display_cols = [c for c in ["釘選","代碼","名稱","Alpha","Sharpe","Treynor","Beta","EPS(TTM)","Score","快速前往"] if c in df.columns]
     edited = st.data_editor(
-        df[display_cols],
-        use_container_width=True,
-        hide_index=True,
+        df[display_cols], use_container_width=True, hide_index=True,
         column_config={k:v for k,v in column_config.items() if v is not None},
         key=f"editor_{kind_key}",
     )
@@ -162,26 +175,18 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
     changed = False
     for r in st.session_state.watchlist[kind_key]:
         sym = r.get("symbol", "").upper()
-        # 釘選
-        new_pin = pin_map.get(sym, False)
-        if new_pin != r.get("pinned", False):
-            r["pinned"] = new_pin
-            changed = True
-        # 名稱
+        if pin_map.get(sym, False) != r.get("pinned", False):
+            r["pinned"] = pin_map.get(sym, False); changed = True
         new_name = name_map.get(sym)
         if new_name and new_name != r.get("name", sym):
-            r["name"] = new_name
-            changed = True
-            try:
-                set_name_override(sym, new_name)
-            except Exception:
-                pass
+            r["name"] = new_name; changed = True
+            try: set_name_override(sym, new_name)
+            except Exception: pass
 
     if changed:
         save_watchlist()
         st.caption("✅ 名稱/釘選變更已存檔並同步。")
 
-    # 操作列
     c1, c2, c3 = st.columns([1,1,2])
     with c1:
         if st.button("重新整理 KPI", key=f"refresh_{kind_key}"):
@@ -191,41 +196,11 @@ def _render_watch_table(kind_key: str, is_etf_list: bool) -> None:
         if st.button("刪除選取", key=f"btn_del_{kind_key}"):
             dels = {s.strip().upper() for s in to_delete.split(",") if s.strip()}
             st.session_state.watchlist[kind_key] = [r for r in st.session_state.watchlist[kind_key] if r.get("symbol","").upper() not in dels]
-            save_watchlist()
-            st.rerun()
+            save_watchlist(); st.rerun()
     with c3:
         st.caption("提示：直接在表格編輯「名稱」，關閉編輯即自動比較並儲存。")
 
-# -------- 快速存取/配置（原有內容保留） --------
-def _load_portfolio() -> Dict[str, Any]:
-    if os.path.exists(PORTFOLIO_PATH):
-        try:
-            with open(PORTFOLIO_PATH, "r", encoding="utf-8") as f:
-                d = json.load(f)
-                if isinstance(d, dict):
-                    return d
-        except Exception:
-            pass
-    return {"positions": []}
-
-def _save_portfolio(d: Dict[str, Any]) -> None:
-    with open(PORTFOLIO_PATH, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
-
-def _quick_add_position(symbol: str, name: str, qty: float, cost: float, group: str) -> None:
-    d = _load_portfolio()
-    d.setdefault("positions", [])
-    d["positions"].append({
-        "symbol": symbol.upper(),
-        "name": name,
-        "qty": float(qty),
-        "cost": float(cost),
-        "group": group,
-        "date": datetime.now().strftime("%Y-%m-%d")
-    })
-    _save_portfolio(d)
-    st.toast("已寫入庫存")
-
+# ---------- quick access ----------
 def _render_quick_and_alloc() -> None:
     st.subheader("⚡ 快速存取")
     c1, c2, c3, c4, c5 = st.columns([1,1,1,1,1])
@@ -238,25 +213,21 @@ def _render_quick_and_alloc() -> None:
     if st.button("寫入庫存", key="qa_btn"):
         nm = name.strip() or get_name_override(sym, sym)
         _quick_add_position(sym, nm, qty, cost, group)
-        try:
-            set_name_override(sym, nm)
-        except Exception:
-            pass
+        try: set_name_override(sym, nm)
+        except Exception: pass
 
     st.subheader("💰 資金配置概覽")
     alloc = {"防守型": 40, "主力": 40, "進攻型": 20}
     st.progress(min(100, alloc["防守型"]), text=f"防守型 {alloc['防守型']}%")
     st.progress(min(100, alloc["主力"]), text=f"主力 {alloc['主力']}%")
     st.progress(min(100, alloc["進攻型"]), text=f"進攻型 {alloc['進攻型']}%")
-    RECO = {"防守型": 40, "主力": 40, "進攻型": 20}
-    TOL  = 5
+    RECO = {"防守型": 40, "主力": 40, "進攻型": 20}; TOL  = 5
     warns = []
     if alloc["防守型"] < RECO["防守型"]-TOL: warns.append("防守型不足")
     if alloc["主力"]   > RECO["主力"]  +TOL: warns.append("主力過多")
     if alloc["進攻型"] > RECO["進攻型"]+TOL: warns.append("進攻型過多")
     if warns: st.warning("；".join(warns)+"。")
 
-# ----------------- Page -----------------
 def show() -> None:
     st.header("👀 觀察名單")
     load_watchlist()
