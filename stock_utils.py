@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Optional, Tuple, Dict, Any
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 import statsmodels.api as sm
+import yfinance as yf
 
-# ---------- 基本設定 ----------
-TICKER_NAME_MAP = {
+# -------- 基本常數 / 對照表 --------
+DEFAULT_RF = 0.012  # 年化無風險利率（fallback）
+DEFAULT_YEARS = 3
+
+TICKER_NAME_MAP: Dict[str, str] = {
     "2330": "台積電",
     "2454": "聯發科",
     "2303": "聯電",
@@ -28,13 +32,14 @@ TICKER_NAME_MAP = {
     "2379": "瑞昱",
     "1303": "南亞",
     "2615": "萬海",
+    # ETF
     "0050": "元大台灣50",
     "0056": "元大高股息",
     "006208": "富邦台50",
     "00980A": "台新永續高息",
 }
 
-# ---------- 代碼工具 ----------
+# -------- 工具：ETF 判斷 / 代碼尋找 --------
 _ETF_RX = re.compile(r"^(00\d{2,}|009\d{2}[A-Z]?)$")
 
 def is_etf(code: str) -> bool:
@@ -44,6 +49,7 @@ def find_ticker_by_name(q: str) -> Optional[str]:
     s = str(q).strip()
     if not s:
         return None
+    # 直接輸入代碼或帶後綴
     if s.isdigit() or s.upper().endswith((".TW", ".TWO")):
         return s.upper().removesuffix(".TW").removesuffix(".TWO")
     # 中文名稱對照
@@ -52,46 +58,47 @@ def find_ticker_by_name(q: str) -> Optional[str]:
             return k
     return None
 
-# ---------- 價價序列 ----------
-def fetch_price_data(code: str, start, end) -> pd.DataFrame | None:
-    """
-    強化下載穩定性：
-    1) 嘗試 {code}.TW 與 {code}.TWO
-    2) 先用 start/end，失敗再退回 period="3y"
-    3) 回傳第一個非空 DataFrame，否則 None
-    """
-    cands = [code] if code.endswith(('.TW', '.TWO')) else [f"{code}.TW", f"{code}.TWO"]
-    for c in cands:
-        try:
-            t = yf.Ticker(c)
+# -------- 下載價量：穩定化 --------
+def _history_for(ticker: str, start: Optional[datetime], end: Optional[datetime]) -> pd.DataFrame | None:
+    t = yf.Ticker(ticker)
+    try:
+        if start and end:
             df = t.history(start=start, end=end)
             if df is not None and not df.empty:
                 return df
-            # fallback: Yahoo 有時對 start/end 失敗；改用 period
-            df = t.history(period="3y")
-            if df is not None and not df.empty:
-                return df
-        except Exception:
-            continue
-    return None
-
-# ---------- 財報工具 ----------
-def _first_non_nan(values) -> Optional[float]:
-    try:
-        s = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
-        return float(s.iloc[0]) if not s.empty else None
+        # fallback：部分情況 start/end 會返回空，改用 period
+        df = t.history(period=f"{DEFAULT_YEARS}y")
+        if df is not None and not df.empty:
+            return df
     except Exception:
-        return None
-
-def _find_row(df: pd.DataFrame, patterns: list[str]) -> Optional[str]:
-    if df is None or df.empty:
-        return None
-    for p in patterns:
-        hits = [c for c in df.index if re.search(p, str(c), re.I)]
-        if hits:
-            return hits[0]
+        pass
     return None
 
+def fetch_price_data(code: str, start: Optional[datetime], end: Optional[datetime]) -> pd.DataFrame | None:
+    """循序嘗試 .TW → .TWO，回傳第一個非空價量資料。"""
+    cands = [code] if code.endswith(('.TW', '.TWO')) else [f"{code}.TW", f"{code}.TWO"]
+    for c in cands:
+        df = _history_for(c, start, end)
+        if df is not None and not df.empty:
+            return df
+    return None
+
+def _fetch_market_close(start: Optional[datetime], end: Optional[datetime]) -> Optional[pd.Series]:
+    """台股大盤 ^TWII；必要時用 period fallback。"""
+    try:
+        t = yf.Ticker("^TWII")
+        if start and end:
+            df = t.history(start=start, end=end)
+            if df is not None and not df.empty:
+                return df["Close"]
+        df = t.history(period=f"{DEFAULT_YEARS}y")
+        if df is not None and not df.empty:
+            return df["Close"]
+    except Exception:
+        pass
+    return None
+
+# -------- 指標計算 --------
 def _annualize_return(close: pd.Series) -> float:
     r = close.pct_change().dropna()
     if r.empty:
@@ -100,9 +107,10 @@ def _annualize_return(close: pd.Series) -> float:
 
 def _calc_alpha(close: pd.Series, market_close: pd.Series, rf: float) -> float:
     try:
-        market_r = market_close.pct_change().dropna()
-        stock_r = close.pct_change().dropna()
-        df = pd.DataFrame({"y": stock_r, "x": market_r}).dropna()
+        df = pd.concat([
+            close.pct_change().rename("y"),
+            market_close.pct_change().rename("x")
+        ], axis=1).dropna()
         if df.empty:
             return np.nan
         X = sm.add_constant(df["x"])
@@ -114,10 +122,14 @@ def _calc_alpha(close: pd.Series, market_close: pd.Series, rf: float) -> float:
 
 def _calc_beta(close: pd.Series, market_close: pd.Series) -> float:
     try:
-        market_r = market_close.pct_change().dropna()
-        stock_r = close.pct_change().dropna()
-        cov = np.cov(stock_r.align(market_r, join="inner"))
-        if cov.shape != (2, 2) or np.isnan(cov).any():
+        df = pd.concat([
+            close.pct_change().rename("y"),
+            market_close.pct_change().rename("x")
+        ], axis=1).dropna()
+        if df.empty:
+            return np.nan
+        cov = np.cov(df["y"], df["x"])
+        if np.isnan(cov).any() or cov.shape != (2, 2):
             return np.nan
         return float(cov[0, 1] / cov[1, 1])
     except Exception:
@@ -156,20 +168,72 @@ def _calc_madr(close: pd.Series) -> float:
     except Exception:
         return np.nan
 
-# ---------- 主函數 ----------
-def get_metrics(code: str, market_close: pd.Series, rf: float, start, end, is_etf: bool = False):
-    df = fetch_price_data(code, start, end)
-    if df is None or df.empty:
+# -------- 財報/配息（盡量容錯） --------
+def _safe_first(series_like) -> Optional[float]:
+    try:
+        s = pd.to_numeric(pd.Series(series_like), errors="coerce").dropna()
+        return float(s.iloc[0]) if not s.empty else None
+    except Exception:
         return None
 
-    close = df["Close"]
-    alpha = _calc_alpha(close, market_close, rf)
-    beta = _calc_beta(close, market_close)
+def _pick_ticker_for_fundamentals(code: str) -> yf.Ticker:
+    """回傳可用的 Ticker（先 .TW 後 .TWO）；失敗仍回 .TW 以避免 None。"""
+    cands = [code] if code.endswith(('.TW', '.TWO')) else [f"{code}.TW", f"{code}.TWO"]
+    for c in cands:
+        try:
+            t = yf.Ticker(c)
+            _ = t.fast_info  # 只要不丟就算可用
+            return t
+        except Exception:
+            try:
+                if not yf.Ticker(c).history(period="1mo").empty:
+                    return yf.Ticker(c)
+            except Exception:
+                pass
+    return yf.Ticker(f"{code}.TW")
+
+# -------- 主 API：get_metrics --------
+def get_metrics(
+    code: str,
+    market_close: Optional[pd.Series],
+    rf: Optional[float],
+    start: Optional[datetime],
+    end: Optional[datetime],
+    is_etf: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """
+    與現有頁面完全相容：
+    - 若呼叫端傳入 None（watchlist_page 目前就是這樣），本函式會**自動補齊**
+      start/end、rf、market_close，避免 KPI 變成 None。
+    - 回傳鍵名：'Alpha'、'Sharpe'、'Beta'、'Treynor'、'MADR'、'EPS_TTM' 等，
+      特別注意 'Sharpe'（不是 'Sharpe Ratio'），以符合你的頁面程式。
+    """
+    # 期間與指數、rf：自動補齊
+    if start is None or end is None:
+        today = datetime.now().date()
+        start = datetime.combine(today - timedelta(days=365 * DEFAULT_YEARS), datetime.min.time())
+        end = datetime.combine(today, datetime.min.time())
+    if rf is None:
+        rf = DEFAULT_RF
+    if market_close is None:
+        market_close = _fetch_market_close(start, end)
+
+    # 價量資料
+    df = fetch_price_data(code, start, end)
+    if df is None or df.empty or "Close" not in df.columns:
+        return None
+    close = df["Close"].dropna()
+    if close.empty:
+        return None
+
+    # 指標
+    alpha = _calc_alpha(close, market_close, rf) if market_close is not None else np.nan
+    beta = _calc_beta(close, market_close) if market_close is not None else np.nan
     sharpe = _calc_sharpe(close, rf)
     treynor = _calc_treynor(close, rf, beta)
     madr = _calc_madr(close)
 
-    # ---- 財報/配息：盡量取到資料（.TW/.TWO 任一能用即可）----
+    # 財報（盡力而為；失敗不影響主要指標）
     debt_equity = np.nan
     current_ratio = np.nan
     roe = np.nan
@@ -177,94 +241,58 @@ def get_metrics(code: str, market_close: pd.Series, rf: float, start, end, is_et
     eps_ttm = np.nan
 
     try:
-        # 取得可用的 Ticker 物件（.TW / .TWO 皆嘗試）
-        t = None
-        for _cand in ([code] if code.endswith(('.TW', '.TWO')) else [f"{code}.TW", f"{code}.TWO"]):
-            try:
-                tmp = yf.Ticker(_cand)
-                # 驗證：有基本欄位/或歷史資料不空即可
-                _ = tmp.fast_info
-                t = tmp
-                break
-            except Exception:
-                try:
-                    if not yf.Ticker(_cand).history(period="1mo").empty:
-                        t = yf.Ticker(_cand)
-                        break
-                except Exception:
-                    pass
-                continue
-        if t is None:
-            # 無法取得財報資料就保留 NaN，後續用價量KPI
-            t = yf.Ticker(f"{code}.TW")  # 最後一次嘗試（避免下方引用錯誤）
+        t = _pick_ticker_for_fundamentals(code)
 
-        # 年/季報
-        bs_year = t.balance_sheet
-        bs_quarter = t.quarterly_balance_sheet
-        fs_year = t.financials
-        fs_quarter = t.quarterly_financials
+        bs_y = t.balance_sheet
+        bs_q = t.quarterly_balance_sheet
+        fs_q = t.quarterly_financials
 
-        # 常用指標
-        # 負債權益比 = TotalLiab / TotalStockholderEquity
-        tr = _find_row(bs_year, [r"(?i)total liab", r"負債"])
-        er = _find_row(bs_year, [r"(?i)total stockholder", r"股東權益"])
-        if tr and er:
-            try:
-                debt_equity = float(bs_year.loc[tr].iloc[0] / bs_year.loc[er].iloc[0])
-            except Exception:
-                pass
-
-        # 流動比率 = CurrentAssets / CurrentLiabilities（改用季報較即時）
-        ca = _find_row(bs_quarter, [r"(?i)total current assets", r"流動資產"])
-        cl = _find_row(bs_quarter, [r"(?i)total current liab", r"流動負債"])
-        if ca and cl:
-            try:
-                current_ratio = float(bs_quarter.loc[ca].iloc[0] / bs_quarter.loc[cl].iloc[0])
-            except Exception:
-                pass
-
-        # ROE（用季報推 TTM）
-        ni = _find_row(fs_quarter, [r"(?i)net income", r"淨利"])
-        eq = _find_row(bs_quarter, [r"(?i)total stockholder", r"股東權益"])
-        if ni and eq:
-            try:
-                roe = float((fs_quarter.loc[ni].iloc[:4].sum()) / bs_quarter.loc[eq].iloc[0])
-            except Exception:
-                pass
-
-        # 股東權益（年報）
-        if er:
-            try:
-                equity_val = float(bs_year.loc[er].iloc[0])
-            except Exception:
-                pass
-
-        # EPS_TTM：股票=淨利TTM / 股數；ETF=近四次現金股利合計
+        # 流動比率（季報較即時）
         try:
-            if is_etf:
-                cash = t.dividends
-                eps_ttm = float(cash.iloc[-4:].sum()) if cash is not None and not cash.empty else np.nan
-            else:
-                shares = t.get_shares_full(start=start, end=end)
-                shares = float(shares.iloc[-1]) if shares is not None and not shares.empty else np.nan
-                if ni:
-                    net_ttm = float(fs_quarter.loc[ni].iloc[:4].sum())
-                    eps_ttm = float(net_ttm / shares) if shares and not np.isnan(shares) else np.nan
+            ca = bs_q.loc[[i for i in bs_q.index if re.search(r"(?i)total current assets|流動資產", str(i))][0]].iloc[0]
+            cl = bs_q.loc[[i for i in bs_q.index if re.search(r"(?i)total current liab|流動負債", str(i))][0]].iloc[0]
+            current_ratio = float(ca / cl)
         except Exception:
             pass
 
-    except Exception:
-        # 財報失敗不影響技術指標
-        pass
+        # ROE（以季報TTM/季末權益）
+        try:
+            ni_row = [i for i in fs_q.index if re.search(r"(?i)net income|淨利", str(i))]
+            eq_row = [i for i in bs_q.index if re.search(r"(?i)total stockholder|股東權益", str(i))]
+            if ni_row and eq_row:
+                ni_ttm = float(pd.to_numeric(fs_q.loc[ni_row[0]].iloc[:4], errors="coerce").sum())
+                eq_last = float(pd.to_numeric(bs_q.loc[eq_row[0]].iloc[0], errors="coerce"))
+                if eq_last:
+                    roe = float(ni_ttm / eq_last)
+        except Exception:
+            pass
 
-    # 警告摘要（可由外部頁面決定如何展示）
-    warnings = []
-    if np.isnan(alpha) or np.isnan(sharpe):
-        warnings.append("統計樣本不足")
-    if not is_etf and (not np.isnan(roe) and roe < 0.08):
-        warnings.append("ROE 偏低")
-    if not np.isnan(madr) and madr > 0.03:
-        warnings.append("波動偏高")
+        # 年報股東權益
+        try:
+            er = [i for i in bs_y.index if re.search(r"(?i)total stockholder|股東權益", str(i))]
+            if er:
+                equity_val = float(pd.to_numeric(bs_y.loc[er[0]].iloc[0], errors="coerce"))
+        except Exception:
+            pass
+
+        # EPS_TTM：股票=淨利TTM/股數；ETF=近四次現金股利
+        try:
+            if is_etf:
+                dv = t.dividends
+                eps_ttm = float(dv.iloc[-4:].sum()) if dv is not None and not dv.empty else np.nan
+            else:
+                shares = t.get_shares_full(start=start, end=end)
+                shares_last = float(shares.iloc[-1]) if shares is not None and not shares.empty else np.nan
+                if not np.isnan(shares_last) and roe is not np.nan:
+                    # 若已取得淨利TTM則使用；否則以年報粗估
+                    ni_row = [i for i in fs_q.index if re.search(r"(?i)net income|淨利", str(i))]
+                    if ni_row:
+                        net_ttm = float(pd.to_numeric(fs_q.loc[ni_row[0]].iloc[:4], errors="coerce").sum())
+                        eps_ttm = float(net_ttm / shares_last) if shares_last else np.nan
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     return {
         "name": TICKER_NAME_MAP.get(code, ""),
@@ -275,9 +303,8 @@ def get_metrics(code: str, market_close: pd.Series, rf: float, start, end, is_et
         "EPS_TTM": eps_ttm,   # 股票=淨利TTM/股；ETF=配息TTM
         "Alpha": alpha,
         "Beta": beta,
-        "Sharpe Ratio": sharpe,
+        "Sharpe": sharpe,     # ★ 關鍵：回到 'Sharpe'（不是 'Sharpe Ratio'）
         "Treynor": treynor,
         "MADR": madr,
-        "警告": warnings,
         "df": df,
     }
