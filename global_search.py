@@ -1,5 +1,5 @@
 # =========================================
-# /mnt/data/global_search.py  （工具：全站搜尋 + 名稱同步）
+# /mnt/data/global_search.py  （工具：全站搜尋 + 名稱同步 + 手動名稱補齊）
 # =========================================
 from __future__ import annotations
 
@@ -40,28 +40,27 @@ def merge_names_into_builtin_map() -> None:
 def _fetch_name_from_yf(symbol: str) -> Optional[str]:
     try:
         tk = yf.Ticker(f"{symbol}.TW")
-        info = getattr(tk, "fast_info", None) or {}
-        # yfinance fast_info 沒有名字時，退回 info/shortName
+        # yfinance fast_info 沒有名字時，退回 info/shortName 或 longName
         nm = None
         try:
             nm = tk.info.get("shortName") or tk.info.get("longName")
         except Exception:
             nm = None
-        # 若取不到，用原始代碼回填
         return str(nm).strip() if nm else None
     except Exception:
         return None
 
 def _save_name_if_new(symbol: str, name_hint: Optional[str] = None) -> None:
-    """若 names.json 還沒此代碼，嘗試從 yfinance 取名並寫入，並 merge 回內存。"""
+    """若 names.json 還沒此代碼，嘗試從 yfinance 取名或採用手動輸入並寫入，並 merge 回內存。"""
     sym = str(symbol).upper()
     if not sym:
         return
-    if name_get(sym):
+    existing = name_get(sym)
+    if existing:
         # 已有，直接 merge 內存
-        TICKER_NAME_MAP[sym] = name_get(sym, TICKER_NAME_MAP.get(sym, "")) or TICKER_NAME_MAP.get(sym, "")
+        TICKER_NAME_MAP[sym] = existing or TICKER_NAME_MAP.get(sym, "")
         return
-    nm = name_hint or _fetch_name_from_yf(sym) or TICKER_NAME_MAP.get(sym, "")
+    nm = (name_hint or "").strip() or _fetch_name_from_yf(sym) or TICKER_NAME_MAP.get(sym, "")
     if nm:
         try:
             name_set(sym, nm)
@@ -76,6 +75,7 @@ def render_global_search() -> Optional[Tuple[str, str, str]]:
     - 導航到相對應頁籤
     - 同步該頁面的 input value 與 URL query (?symbol=、?nav=)
     - 若缺名稱，會寫入 names.json 並併回 TICKER_NAME_MAP（如 2313）
+    - 若仍抓不到名稱，提供「手動名稱補齊」輸入框
     回傳 (symbol, name, kind) 或 None
     """
     st.sidebar.markdown("---")
@@ -92,7 +92,16 @@ def render_global_search() -> Optional[Tuple[str, str, str]]:
     name = name_get(symbol, TICKER_NAME_MAP.get(symbol, ""))
     if not name:
         _save_name_if_new(symbol)
-        name = name_get(symbol, TICKER_NAME_MAP.get(symbol, "")) or symbol
+        name = name_get(symbol, TICKER_NAME_MAP.get(symbol, "")) or ""
+
+    # 若仍無名稱 → 顯示手動名稱輸入（僅在名稱缺失時出現）
+    if not name:
+        with st.sidebar.expander("⚙️ 找不到名稱？手動輸入", expanded=True):
+            manual = st.text_input("輸入公司/ETF名稱", key=f"manual_name_{symbol}")
+            if manual.strip():
+                _save_name_if_new(symbol, manual.strip())
+                name = manual.strip()
+                st.success(f"已設定：{symbol} → {name}")
 
     # 同步 session_state 讓各頁面自帶預填值
     if kind == "ETF":
@@ -105,5 +114,6 @@ def render_global_search() -> Optional[Tuple[str, str, str]]:
     st.query_params["symbol"] = symbol
 
     # 在側欄即時顯示解析結果
-    st.sidebar.caption(f"➡ 導航：{kind}｜{name}（{symbol}）")
-    return symbol, name, kind
+    display_name = name or symbol
+    st.sidebar.caption(f"➡ 導航：{kind}｜{display_name}（{symbol}）")
+    return symbol, display_name, kind
