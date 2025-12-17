@@ -43,6 +43,7 @@ def main() -> None:
     # - 更新 URL 的 ?symbol= 與 ?nav=
     # - 同步 st.session_state["stock_symbol"] / ["etf_symbol"]
     # - 補齊名稱到 names.json，並 merge 回 TICKER_NAME_MAP
+    # - 若抓不到名稱，允許手動輸入補齊
 
     # ---- 保留原本的分頁選擇 ----
     nav_param = st.query_params.get("nav")
