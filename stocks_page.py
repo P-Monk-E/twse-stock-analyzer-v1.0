@@ -12,87 +12,100 @@ import streamlit as st
 import yfinance as yf
 
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
+from names_store import get as get_name_override, set as set_name_override
 from chart_utils import plot_candlestick_with_ma
-from risk_grading import (
-    grade_alpha,
-    grade_sharpe,
-    grade_debt_equity,
-    grade_current_ratio,
-    grade_roe,
-    summarize,
-)
-from watchlist_page import add_to_watchlist  # 新增
-# 本檔其餘結構沿用你現有版本。 :contentReference[oaicite:1]{index=1}
+from watchlist_page import add_to_watchlist  # 外部API：加入觀察
 
-def _sync_symbol_from_input() -> None:
-    txt = (st.session_state.get("stock_symbol") or "").strip()
-    if txt:
-        st.query_params["symbol"] = txt
-    elif "symbol" in st.query_params:
-        del st.query_params["symbol"]
 
-def _tag(val: Optional[float], thr: float, greater: bool = True) -> str:
-    if val is None or (isinstance(val, float) and (math.isnan(val) or pd.isna(val))):
-        return "❓"
-    return "✅" if ((val >= thr) if greater else (val <= thr)) else "❗"
-
-def _fmt2(v: Optional[float]) -> str:
+# --------- helpers ---------
+def _fmt2(x: Optional[float]) -> str:
+    if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
+        return "—"
     try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return "—"
-        return f"{float(v):.2f}"
+        return f"{float(x):.2f}"
     except Exception:
         return "—"
 
-def _fmt2pct(v: Optional[float]) -> str:
+def _fmt2pct(x: Optional[float]) -> str:
+    if x is None:
+        return "—"
     try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return "—"
-        return f"{float(v)*100:.2f}%"
+        return f"{float(x) * 100:.2f}%"
     except Exception:
         return "—"
 
-def _fmt2comma(v: Optional[float]) -> str:
+def _icon(val: Optional[float], good_higher: bool = True) -> str:
+    if val is None:
+        return "⚪"
     try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return "—"
-        return f"{float(v):,.2f}"
+        v = float(val)
     except Exception:
-        return "—"
+        return "⚪"
+    if math.isnan(v) or math.isinf(v):
+        return "⚪"
+    if good_higher:
+        return "🟢" if v > 0 else "🔴" if v < 0 else "⚪"
+    else:
+        return "🟢" if v < 0 else "🔴" if v > 0 else "⚪"
 
-def show(prefill_symbol: str | None = None) -> None:
+def _tag(val: Optional[float], target: float, good_higher: bool=True) -> str:
+    if val is None:
+        return ""
+    try:
+        v = float(val)
+    except Exception:
+        return ""
+    if math.isnan(v) or math.isinf(v):
+        return ""
+    if good_higher:
+        return "✅" if v >= target else "❗"
+    else:
+        return "✅" if v <= target else "❗"
+
+
+# --------- Page ---------
+def show() -> None:
     st.header("📈 股票專區")
 
-    default_symbol = st.query_params.get("symbol", prefill_symbol or "")
-    st.text_input("輸入股票名稱或代碼（例：台積電 或 2330）",
-                  value=default_symbol, key="stock_symbol", on_change=_sync_symbol_from_input)
-    user_input = (st.session_state.get("stock_symbol") or "").strip()
-    if not user_input:
-        st.info("請輸入股票名稱或代碼以查詢。")
+    # 搜尋輸入
+    q = st.text_input("輸入股票名稱或代碼（例：台積電 或 2330）", key="stock_query")
+
+    if not q:
+        st.caption("提示：可輸入中文或代碼（例：台積電、2330）")
         return
 
     try:
-        ticker = find_ticker_by_name(user_input)
-        if is_etf(ticker):
-            st.warning("偵測到輸入為 ETF，請切換至「ETF」頁面查詢。")
+        ticker = find_ticker_by_name(q)
+        if not ticker or is_etf(ticker):
+            st.warning("請輸入合法的**個股**代碼或名稱。")
             return
 
-        end = datetime.today()
-        start = end - timedelta(days=365 * 3)
-        rf = 0.01
-        mkt_close = yf.Ticker("^TWII").history(start=start, end=end)["Close"]
+        today = datetime.now().date()
+        start = today - timedelta(days=365*3)
+        end = today
+        rf = 0.012  # 假設無風險利率（年化）
+        mkt_close = yf.Ticker("^TWII").history(period="3y")["Close"]
 
         stats = get_metrics(ticker, mkt_close, rf, start, end, is_etf=False)
         if not stats:
-            st.warning("查無該股票資料或資料不足。")
+            st.warning("查無資料或資料不足。")
             return
 
+        # 取得名稱並覆寫為自訂名稱（若存在）
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
-        # ---- 標題 + 右上角加入觀察 ----
+        name = get_name_override(ticker, name)
+
+        # ---- 標題 + 右上角加入觀察 / 名稱 ----
         c1, c2 = st.columns([1, 0.15])
         with c1:
             st.subheader(f"{name or ticker}（{ticker}）")
         with c2:
+            with st.popover("✏️ 名稱", use_container_width=True):
+                new_name = st.text_input("自訂名稱（留空則不變）", value=name or ticker, key="stock_custom_name")
+                if st.button("儲存名稱", key="btn_save_stock_name"):
+                    set_name_override(ticker, new_name or ticker)
+                    st.toast("已儲存名稱")
+                    name = new_name or ticker
             if st.button("＋ 加入觀察", key="btn_watch_stock"):
                 add_to_watchlist("stock", ticker, name or ticker)
 
@@ -102,47 +115,26 @@ def show(prefill_symbol: str | None = None) -> None:
             st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
             st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
         with col2:
-            st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe Ratio")))
-            st.caption(_tag(stats.get("Sharpe Ratio"), 1, True) + " >1 佳")
+            st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe")))
+            st.caption(" >1 佳")
         with col3:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
 
-        # ======= 風險摘要（不含新欄位）=======
-        grades = {
-            "Alpha":  grade_alpha(stats.get("Alpha")),
-            "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
-        }
-        v_de = stats.get("負債權益比")
-        v_cr = stats.get("流動比率")
+        # ======= 次要 KPI（股利、ROE、EPS等）=======
+        v_eps = stats.get("EPS")
+        v_div = stats.get("DividendYield")
         v_roe = stats.get("ROE")
-        grades["負債權益比"] = grade_debt_equity(v_de if pd.notna(v_de) else None)
-        grades["流動比率"]   = grade_current_ratio(v_cr if pd.notna(v_cr) else None)
-        grades["ROE"]        = grade_roe(v_roe if pd.notna(v_roe) else None)
-
-        crit, warn, _ = summarize(grades)
-        if crit:
-            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
-        elif warn:
-            st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
-        else:
-            st.success("✅ 指標狀態良好。")
-
-        # ======= 財務列：原三項 + 股東權益 + EPS(TTM) =======
         equity = stats.get("Equity")
         eps_ttm = stats.get("EPS_TTM")
 
-        def _icon(name: str) -> str:
-            return grades[name][0]
-
         line = (
-            f"**負債權益比**：{_fmt2(v_de)} {_icon('負債權益比')} ｜ "
-            f"**流動比率**：{_fmt2(v_cr)} {_icon('流動比率')} ｜ "
-            f"**ROE**：{_fmt2pct(v_roe)} {_icon('ROE')} ｜ "
-            f"**股東權益**：{_fmt2comma(equity)} ｜ "
+            f"**殖利率**：{_fmt2pct(v_div)} {_icon(v_div)} ｜ "
+            f"**ROE**：{_fmt2pct(v_roe)} {_icon(v_roe)} ｜ "
+            f"**股東權益**：{_fmt2(equity)} ｜ "
             f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
         )
-        st.markdown(line)  # 股東權益 / EPS 僅顯示，不評分
+        st.markdown(line)
 
         # ======= 圖表 =======
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
