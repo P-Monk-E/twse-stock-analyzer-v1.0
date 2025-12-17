@@ -1,257 +1,276 @@
-# =========================================
 # /mnt/data/stock_utils.py
-# =========================================
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
 import yfinance as yf
+import statsmodels.api as sm
 
-DEFAULT_RF = 0.012
-DEFAULT_YEARS = 3
-
-TICKER_NAME_MAP: Dict[str, str] = {
-    "2330": "台積電", "2454": "聯發科", "2303": "聯電", "2317": "鴻海",
-    "2881": "富邦金", "2882": "國泰金", "2603": "長榮", "2618": "長榮航",
-    "1216": "統一", "2383": "台光電", "2313": "華通", "2211": "長榮鋼",
-    "2451": "創見", "2377": "微星", "2379": "瑞昱", "1303": "南亞", "2615": "萬海",
-    "0050": "元大台灣50", "0056": "元大高股息", "006208": "富邦台50", "00980A": "台新永續高息",
+# ---------- 基本設定 ----------
+TICKER_NAME_MAP = {
+    "2330": "台積電",
+    "2454": "聯發科",
+    "2303": "聯電",
+    "2618": "長榮航",
+    "1737": "臺鹽",
+    "0050": "元大台灣50",
+    "0056": "元大高股息",
+    "006208": "富邦科技",
 }
-
-_ETF_RX = re.compile(r"^(00\d{2,}|009\d{2}[A-Z]?)$")
+ETF_LIST = {"0050", "0056", "006208"}
+_ETF_REGEX = re.compile(r"^00[0-9]{2,4}[A-Z]?$", re.IGNORECASE)
 
 def is_etf(code: str) -> bool:
-    return bool(_ETF_RX.match(str(code).upper()))
+    if not code:
+        return False
+    c = str(code).strip().upper()
+    return (c in ETF_LIST) or bool(_ETF_REGEX.match(c))
 
-def find_ticker_by_name(q: str) -> Optional[str]:
-    s = str(q).strip()
-    if not s:
-        return None
-    if s.isdigit() or s.upper().endswith((".TW", ".TWO")):
-        return s.upper().removesuffix(".TW").removesuffix(".TWO")
-    for k, v in TICKER_NAME_MAP.items():
-        if v == s:
-            return k
-    return None
-
-# -------- price fetch with robust fallbacks --------
-def _history_for(ticker: str, start: Optional[datetime], end: Optional[datetime]) -> pd.DataFrame | None:
-    t = yf.Ticker(ticker)
-    # 1) start/end
-    try:
-        if start and end:
-            df = t.history(start=start, end=end, interval="1d")
-            if df is not None and not df.empty:
-                return df
-    except Exception:
-        pass
-    # 2) period fallback（由長到短再到 max）
-    for per in ["3y", "2y", "1y", "6mo", "max"]:
-        try:
-            df = t.history(period=per, interval="1d")
-            if df is not None and not df.empty:
-                return df
-        except Exception:
-            continue
-    return None
-
-def fetch_price_data(code: str, start: Optional[datetime], end: Optional[datetime]) -> pd.DataFrame | None:
-    cands = [code] if code.endswith((".TW", ".TWO")) else [f"{code}.TW", f"{code}.TWO"]
-    for c in cands:
-        df = _history_for(c, start, end)
-        if df is not None and not df.empty:
-            return df
-    return None
-
-def _fetch_market_close(start: Optional[datetime], end: Optional[datetime]) -> Optional[pd.Series]:
-    try:
-        t = yf.Ticker("^TWII")
-        if start and end:
-            df = t.history(start=start, end=end, interval="1d")
-            if df is not None and not df.empty:
-                return df["Close"]
-        for per in ["3y", "2y", "1y", "6mo", "max"]:
-            df = t.history(period=per, interval="1d")
-            if df is not None and not df.empty:
-                return df["Close"]
-    except Exception:
-        pass
-    return None
-
-# -------- KPIs --------
-def _calc_alpha(close: pd.Series, market_close: pd.Series, rf: float) -> float:
-    try:
-        df = pd.concat([close.pct_change().rename("y"),
-                        market_close.pct_change().rename("x")], axis=1).dropna()
-        if df.empty:
-            return np.nan
-        X = sm.add_constant(df["x"])
-        model = sm.OLS(df["y"] - rf / 252, X).fit()
-        a_daily = model.params["const"]
-        return float((1 + a_daily) ** 252 - 1)
-    except Exception:
-        return np.nan
-
-def _calc_beta(close: pd.Series, market_close: pd.Series) -> float:
-    try:
-        df = pd.concat([close.pct_change().rename("y"),
-                        market_close.pct_change().rename("x")], axis=1).dropna()
-        if df.empty:
-            return np.nan
-        cov = np.cov(df["y"], df["x"])
-        if np.isnan(cov).any() or cov.shape != (2, 2):
-            return np.nan
-        return float(cov[0, 1] / cov[1, 1])
-    except Exception:
-        return np.nan
-
-def _calc_sharpe(close: pd.Series, rf: float) -> float:
-    try:
-        r = close.pct_change().dropna()
-        if r.empty:
-            return np.nan
-        excess = r - rf / 252
-        sr = excess.mean() / excess.std()
-        return float(sr * np.sqrt(252))
-    except Exception:
-        return np.nan
-
-def _calc_treynor(close: pd.Series, rf: float, beta: float) -> float:
-    try:
-        if beta is None or np.isnan(beta) or beta == 0:
-            return np.nan
-        r = close.pct_change().dropna()
-        if r.empty:
-            return np.nan
-        excess = r - rf / 252
-        er = float((1 + excess.mean()) ** 252 - 1)
-        return float(er / beta)
-    except Exception:
-        return np.nan
-
-def _calc_madr(close: pd.Series) -> float:
-    try:
-        r = close.pct_change().dropna()
-        if r.empty:
-            return np.nan
-        return float(np.abs(r).mean())
-    except Exception:
-        return np.nan
-
-# -------- fundamentals (best-effort) --------
-def _pick_ticker_for_fundamentals(code: str) -> yf.Ticker:
-    cands = [code] if code.endswith((".TW", ".TWO")) else [f"{code}.TW", f"{code}.TWO"]
-    for c in cands:
-        try:
-            t = yf.Ticker(c)
-            _ = t.fast_info
+def find_ticker_by_name(input_str: str) -> str:
+    s = str(input_str).strip().upper()
+    if s in TICKER_NAME_MAP:
+        return s
+    for t, name in TICKER_NAME_MAP.items():
+        if s in name or s in name.upper():
             return t
-        except Exception:
-            try:
-                if not yf.Ticker(c).history(period="1mo").empty:
-                    return yf.Ticker(c)
-            except Exception:
-                pass
-    return yf.Ticker(f"{code}.TW")
+    return s
 
-# -------- public API --------
-def get_metrics(
-    code: str,
-    market_close: Optional[pd.Series],
-    rf: Optional[float],
-    start: Optional[datetime],
-    end: Optional[datetime],
-    is_etf: bool = False,
-) -> Optional[Dict[str, Any]]:
-    # Auto-fill duration, rf, market
-    if start is None or end is None:
-        today = datetime.now().date()
-        start = datetime.combine(today - timedelta(days=365 * DEFAULT_YEARS), datetime.min.time())
-        end = datetime.combine(today, datetime.min.time())
-    if rf is None:
-        rf = DEFAULT_RF
-    if market_close is None:
-        market_close = _fetch_market_close(start, end)
-
-    df = fetch_price_data(code, start, end)
-    if df is None or df.empty or "Close" not in df.columns:
-        return None
-    close = df["Close"].dropna()
-    if close.empty:
+def fetch_price_data(code: str, start, end) -> pd.DataFrame | None:
+    try:
+        return yf.Ticker(f"{code}.TW").history(start=start, end=end)
+    except Exception:
         return None
 
-    alpha = _calc_alpha(close, market_close, rf) if market_close is not None else np.nan
-    beta = _calc_beta(close, market_close) if market_close is not None else np.nan
-    sharpe = _calc_sharpe(close, rf)
-    treynor = _calc_treynor(close, rf, beta)
-    madr = _calc_madr(close)
+# ---------- 財報工具 ----------
+def _first_non_nan(values) -> Optional[float]:
+    try:
+        s = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+        return float(s.iloc[0]) if not s.empty else None
+    except Exception:
+        return None
 
-    # fundamentals (best-effort; optional)
+def _find_row(df: pd.DataFrame, patterns: list[str]) -> Optional[str]:
+    if df is None or df.empty:
+        return None
+    idx_lower = {str(i).lower(): i for i in df.index}
+    for p in patterns:
+        p = p.lower()
+        for low, original in idx_lower.items():
+            if p in low:
+                return original
+    return None
+
+def _latest_from_row(df: pd.DataFrame, row_name: Optional[str]) -> Optional[float]:
+    if df is None or row_name is None:
+        return None
+    try:
+        return _first_non_nan(df.loc[row_name].values)
+    except Exception:
+        return None
+
+def _get_shares_outstanding(t: yf.Ticker) -> Optional[float]:
+    """盡量取得流通在外股數；失敗回 None。"""
+    # a) 全歷史 shares
+    try:
+        sf = t.get_shares_full(start="2000-01-01", end=None)
+        if sf is not None and not sf.empty:
+            val = float(sf.dropna().iloc[-1])
+            if val > 0:
+                return val
+    except Exception:
+        pass
+    # b) fast_info
+    try:
+        val = t.fast_info.get("sharesOutstanding")
+        if val and float(val) > 0:
+            return float(val)
+    except Exception:
+        pass
+    # c) info
+    try:
+        val = t.info.get("sharesOutstanding")
+        if val and float(val) > 0:
+            return float(val)
+    except Exception:
+        pass
+    return None
+
+def _get_financials(code: str) -> Tuple[float, float, float, float, float]:
+    """
+    回傳 (debt_equity, current_ratio, roe, equity, eps_ttm)；不可得則為 np.nan。
+    股票用：EPS(TTM)=近四季淨利合計 / 流通在外股數
+    """
     debt_equity = np.nan
     current_ratio = np.nan
     roe = np.nan
     equity_val = np.nan
     eps_ttm = np.nan
+
     try:
-        t = _pick_ticker_for_fundamentals(code)
-        bs_y = t.balance_sheet
-        bs_q = t.quarterly_balance_sheet
-        fs_q = t.quarterly_financials
+        t = yf.Ticker(f"{code}.TW")
 
-        # Current ratio
-        try:
-            ca_row = [i for i in bs_q.index if re.search(r"(?i)total current assets|流動資產", str(i))]
-            cl_row = [i for i in bs_q.index if re.search(r"(?i)total current liab|流動負債", str(i))]
-            if ca_row and cl_row:
-                ca = float(pd.to_numeric(bs_q.loc[ca_row[0]].iloc[0], errors="coerce"))
-                cl = float(pd.to_numeric(bs_q.loc[cl_row[0]].iloc[0], errors="coerce"))
-                if cl:
-                    current_ratio = ca / cl
-        except Exception:
-            pass
+        # 年/季報
+        bs_year = t.balance_sheet
+        bs_quarter = t.quarterly_balance_sheet
+        fs_year = t.financials
+        fs_quarter = t.quarterly_financials
 
-        # ROE (TTM / last equity)
-        try:
-            ni_row = [i for i in fs_q.index if re.search(r"(?i)net income|淨利", str(i))]
-            eq_row = [i for i in bs_q.index if re.search(r"(?i)total stockholder|股東權益", str(i))]
-            if ni_row and eq_row:
-                ni_ttm = float(pd.to_numeric(fs_q.loc[ni_row[0]].iloc[:4], errors="coerce").sum())
-                eq_last = float(pd.to_numeric(bs_q.loc[eq_row[0]].iloc[0], errors="coerce"))
-                if eq_last:
-                    roe = ni_ttm / eq_last
-        except Exception:
-            pass
+        bs = next((x for x in [bs_year, bs_quarter] if x is not None and not x.empty), None)
+        fs = next((x for x in [fs_year, fs_quarter] if x is not None and not x.empty), None)
 
-        # Equity (annual)
-        try:
-            er = [i for i in bs_y.index if re.search(r"(?i)total stockholder|股東權益", str(i))]
-            if er:
-                equity_val = float(pd.to_numeric(bs_y.loc[er[0]].iloc[0], errors="coerce"))
-        except Exception:
-            pass
+        # ---- Equity / Liabilities / Current ----
+        row_equity = _find_row(bs, [
+            "total stockholder equity",
+            "total shareholders equity",
+            "total equity gross minority interest",
+            "total equity",
+        ]) if bs is not None else None
+        row_assets = _find_row(bs, ["total assets"]) if bs is not None else None
+        row_liab   = _find_row(bs, ["total liab", "total liabilities"]) if bs is not None else None
+        row_cur_a  = _find_row(bs, ["total current assets", "current assets"]) if bs is not None else None
+        row_cur_l  = _find_row(bs, ["total current liabilities", "current liabilities", "current liab"]) if bs is not None else None
 
-        # EPS TTM
-        try:
-            if is_etf:
-                dv = t.dividends
-                eps_ttm = float(dv.iloc[-4:].sum()) if dv is not None and not dv.empty else np.nan
-            else:
-                shares = t.get_shares_full(start=start, end=end)
-                if shares is not None and not shares.empty:
-                    shares_last = float(shares.iloc[-1])
-                    ni_row = [i for i in fs_q.index if re.search(r"(?i)net income|淨利", str(i))]
-                    if ni_row and shares_last:
-                        net_ttm = float(pd.to_numeric(fs_q.loc[ni_row[0]].iloc[:4], errors="coerce").sum())
-                        eps_ttm = net_ttm / shares_last
-        except Exception:
-            pass
+        v_equity = _latest_from_row(bs, row_equity)
+        v_assets = _latest_from_row(bs, row_assets)
+        v_liab   = _latest_from_row(bs, row_liab)
+        v_ca     = _latest_from_row(bs, row_cur_a)
+        v_cl     = _latest_from_row(bs, row_cur_l)
+
+        if v_equity is None and (v_assets is not None and v_liab is not None):
+            v_equity = float(v_assets) - float(v_liab)
+        if v_equity is not None and np.isfinite(v_equity):
+            equity_val = float(v_equity)
+
+        if v_liab is not None and v_equity is not None and v_equity != 0 and np.isfinite(v_equity):
+            debt_equity = float(v_liab) / float(v_equity)
+        if v_ca is not None and v_cl is not None and v_cl != 0 and np.isfinite(v_cl):
+            current_ratio = float(v_ca) / float(v_cl)
+
+        # ---- ROE / EPS(TTM) ----
+        v_net_income_yr = None
+        if fs_year is not None and not fs_year.empty:
+            row_ni_yr = _find_row(fs_year, [
+                "net income common stockholders",
+                "net income applicable to common shares",
+                "net income",
+                "net income from continuing operations",
+            ])
+            v_net_income_yr = _latest_from_row(fs_year, row_ni_yr)
+
+        v_net_income_ttm = None
+        if fs_quarter is not None and not fs_quarter.empty:
+            row_ni_q = _find_row(fs_quarter, [
+                "net income common stockholders",
+                "net income applicable to common shares",
+                "net income",
+                "net income from continuing operations",
+            ])
+            if row_ni_q is not None and row_ni_q in fs_quarter.index:
+                try:
+                    qvals = pd.to_numeric(fs_quarter.loc[row_ni_q], errors="coerce").dropna()
+                    if not qvals.empty:
+                        v_net_income_ttm = float(qvals.sort_index(ascending=True).tail(4).sum())
+                except Exception:
+                    pass
+
+        if v_net_income_yr is not None and v_equity is not None and v_equity != 0 and np.isfinite(v_equity):
+            roe = float(v_net_income_yr) / float(v_equity)
+
+        shares = _get_shares_outstanding(t)
+        if v_net_income_ttm is not None and shares is not None and shares > 0:
+            eps_ttm = float(v_net_income_ttm) / float(shares)
+
     except Exception:
         pass
+
+    return debt_equity, current_ratio, roe, equity_val, eps_ttm
+
+# ---------- ETF 專用：以配息估 EPS(TTM) ----------
+def _get_eps_ttm_etf(code: str) -> float:
+    """ETF 的 EPS(TTM) 用近四次配息合計；抓不到回 NaN。"""
+    try:
+        t = yf.Ticker(f"{code}.TW")
+        dv = t.dividends
+        if dv is None or dv.empty:
+            return np.nan
+        last4 = pd.to_numeric(dv.sort_index(ascending=True).tail(4), errors="coerce").dropna()
+        if last4.empty:
+            return np.nan
+        return float(last4.sum())
+    except Exception:
+        return np.nan
+
+# ---------- 風險 / 績效計算 ----------
+def _calc_beta(asset: pd.Series, market: pd.Series) -> float:
+    df = pd.concat([asset, market], axis=1).dropna()
+    if df.empty:
+        return np.nan
+    df.columns = ["asset", "market"]
+    ar = df["asset"].resample("M").last().pct_change().dropna()
+    mr = df["market"].resample("M").last().pct_change().dropna()
+    if len(ar) < 12:
+        return np.nan
+    X = sm.add_constant(mr)
+    return float(sm.OLS(ar, X).fit().params.get("market", np.nan))
+
+def _calc_alpha(asset: pd.Series, market: pd.Series, rf: float) -> float:
+    r = pd.concat([asset, market], axis=1).pct_change().dropna()
+    if r.empty:
+        return np.nan
+    excess_a = r.iloc[:, 0] - rf / 252
+    excess_m = r.iloc[:, 1] - rf / 252
+    X = sm.add_constant(excess_m)
+    return float(sm.OLS(excess_a, X).fit().params.get("const", np.nan)) * 252
+
+def _calc_sharpe(prices: pd.Series, rf: float) -> float:
+    r = prices.pct_change().dropna()
+    if r.empty or r.std() == 0:
+        return np.nan
+    return ((r - rf / 252).mean() / r.std()) * np.sqrt(252)
+
+def _calc_treynor(prices: pd.Series, rf: float, beta: float) -> float:
+    if beta is None or not np.isfinite(beta) or abs(beta) < 1e-6:
+        return np.nan
+    r = prices.pct_change().dropna()
+    if r.empty:
+        return np.nan
+    ann_return = float(r.mean()) * 252.0
+    return (ann_return - rf) / beta
+
+def _calc_madr(prices: pd.Series) -> float:
+    r = prices.pct_change().dropna()
+    if r.empty:
+        return np.nan
+    return float(np.abs(r).mean())
+
+# ---------- 主函數 ----------
+def get_metrics(code: str, market_close: pd.Series, rf: float, start, end, is_etf: bool = False):
+    df = fetch_price_data(code, start, end)
+    if df is None or df.empty:
+        return None
+
+    close = df["Close"]
+    alpha = _calc_alpha(close, market_close, rf)
+    beta = _calc_beta(close, market_close)
+    sharpe = _calc_sharpe(close, rf)
+    treynor = _calc_treynor(close, rf, beta)
+    madr = _calc_madr(close)
+
+    if not is_etf:
+        debt_equity, current_ratio, roe, equity_val, eps_ttm = _get_financials(code)
+    else:
+        # ETF：三個財務比率不適用；EPS_TTM 以近四季配息合計表示
+        debt_equity = current_ratio = roe = equity_val = np.nan
+        eps_ttm = _get_eps_ttm_etf(code)
+
+    warnings = {
+        "負債權益比": bool(debt_equity <= 1.0) if pd.notna(debt_equity) else False,
+        "流動比率": bool(current_ratio >= 1.5) if pd.notna(current_ratio) else False,
+        "ROE": bool(roe >= 0.15) if pd.notna(roe) else False,
+    }
 
     return {
         "name": TICKER_NAME_MAP.get(code, ""),
@@ -259,11 +278,12 @@ def get_metrics(
         "流動比率": current_ratio,
         "ROE": roe,
         "Equity": equity_val,
-        "EPS_TTM": eps_ttm,
+        "EPS_TTM": eps_ttm,   # 股票=淨利TTM/股；ETF=配息TTM
         "Alpha": alpha,
         "Beta": beta,
-        "Sharpe": sharpe,      # ← 與頁面鍵一致
+        "Sharpe Ratio": sharpe,
         "Treynor": treynor,
         "MADR": madr,
+        "警告": warnings,
         "df": df,
     }

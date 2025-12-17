@@ -1,5 +1,5 @@
 # =========================================
-# /mnt/data/etf_page.py  （右上角「＋加入觀察」）
+# /mnt/data/etf_page.py  （右上角「＋加入觀察」+ EPS(TTM) KPI 已在檔內）
 # =========================================
 from __future__ import annotations
 
@@ -11,64 +11,54 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
+from portfolio_risk_utils import diversification_warning
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
-from names_store import get as get_name_override, set as set_name_override
 from chart_utils import plot_candlestick_with_ma
-from watchlist_page import add_to_watchlist  # 外部API：加入觀察
+from watchlist_page import add_to_watchlist  # 新增
+# 以你現有版本為基礎加上右上角按鈕。 :contentReference[oaicite:2]{index=2}
 
+def _sync_symbol_from_input() -> None:
+    txt = (st.session_state.get("etf_symbol") or "").strip()
+    if txt:
+        st.query_params["symbol"] = txt
+    elif "symbol" in st.query_params:
+        del st.query_params["symbol"]
 
-# --------- helpers ---------
-def _fmt2(x: Optional[float]) -> str:
-    if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
-        return "—"
+def _tag(val: Optional[float], thr: float, greater: bool = True) -> str:
+    if val is None or (isinstance(val, float) and (math.isnan(val) or pd.isna(val))):
+        return "❓"
+    return "✅" if ((val >= thr) if greater else (val <= thr)) else "❗"
+
+def _fmt2(v: Optional[float]) -> str:
     try:
-        return f"{float(x):.2f}"
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f"{float(v):.2f}"
     except Exception:
         return "—"
 
-def _fmt2pct(x: Optional[float]) -> str:
-    if x is None:
-        return "—"
-    try:
-        return f"{float(x) * 100:.2f}%"
-    except Exception:
-        return "—"
-
-def _tag(val: Optional[float], target: float, good_higher: bool=True) -> str:
-    if val is None:
-        return ""
-    try:
-        v = float(val)
-    except Exception:
-        return ""
-    if math.isnan(v) or math.isinf(v):
-        return ""
-    if good_higher:
-        return "✅" if v >= target else "❗"
-    else:
-        return "✅" if v <= target else "❗"
-
-
-# --------- Page ---------
-def show() -> None:
+def show(prefill_symbol: str | None = None) -> None:
     st.header("📊 ETF 專區")
 
-    q = st.text_input("輸入 ETF 名稱或代碼（例：0050 / 0056 / 006208 / 00980A）", key="etf_query")
-    if not q:
-        st.caption("提示：可輸入中文或代碼（例：元大台灣50、0050）")
+    default_symbol = st.query_params.get("symbol", prefill_symbol or "")
+    st.text_input("輸入 ETF 名稱或代碼（例：0050 / 0056 / 006208 / 00980A）",
+                  value=default_symbol, key="etf_symbol", on_change=_sync_symbol_from_input)
+    user_input = (st.session_state.get("etf_symbol") or "").strip()
+    if not user_input:
+        st.info("請輸入 ETF 名稱或代碼以查詢。")
         return
 
     try:
-        ticker = find_ticker_by_name(q)
-        if not ticker or not is_etf(ticker):
-            st.warning("請輸入合法的 **ETF** 代碼或名稱。")
+        ticker = find_ticker_by_name(user_input)
+        if not is_etf(ticker):
+            st.warning("偵測到輸入為個股，請切換至「股票」頁面查詢。")
             return
 
-        today = datetime.now().date()
-        start = today - timedelta(days=365*3)
-        end = today
-        rf = 0.012  # 假設無風險利率（年化）
-        mkt_close = yf.Ticker("^TWII").history(period="3y")["Close"]
+        end = datetime.today()
+        start = end - timedelta(days=365 * 3)
+        rf = 0.01
+        mkt_close = yf.Ticker("^TWII").history(start=start, end=end)["Close"]
 
         stats = get_metrics(ticker, mkt_close, rf, start, end, is_etf=True)
         if not stats:
@@ -76,50 +66,42 @@ def show() -> None:
             return
 
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
-        # override with custom name if exists
-        name = get_name_override(ticker, name)
         # ---- 標題 + 右上角加入觀察 ----
         c1, c2 = st.columns([1, 0.15])
         with c1:
             st.subheader(f"{name or ticker}（{ticker}）")
         with c2:
-            with st.popover("✏️ 名稱", use_container_width=True):
-                new_name = st.text_input("自訂名稱（留空則不變）", value=name or ticker, key="etf_custom_name")
-                if st.button("儲存名稱", key="btn_save_etf_name"):
-                    set_name_override(ticker, new_name or ticker)
-                    st.toast("已儲存名稱")
-                    name = new_name or ticker
             if st.button("＋ 加入觀察", key="btn_watch_etf"):
                 add_to_watchlist("etf", ticker, name or ticker)
 
-        # ======= KPI：四欄（ETF 額外顯示 Treynor / Beta / EPS）=======
+        # ======= KPI（含 EPS TTM）=======
         col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
-            st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
-            st.caption("越大越好")
+            st.metric("Alpha(年化)", _fmt2(stats.get("Alpha"))); st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
         with col2:
-            st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe")))
-            st.caption(">1 佳")
+            st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe Ratio"))); st.caption(_tag(stats.get("Sharpe Ratio"), 1, True) + " >1 佳")
         with col3:
-            st.metric("Treynor Ratio", _fmt2(stats.get("Treynor")))
-            st.caption("市場單位風險回報")
+            st.metric("Treynor Ratio", _fmt2(stats.get("Treynor"))); st.caption("市場單位風險回報")
         with col4:
-            st.metric("Beta", _fmt2(stats.get("Beta")))
-            st.caption("相對市場波動")
+            st.metric("Beta", _fmt2(stats.get("Beta"))); st.caption("相對市場波動")
         with col5:
-            st.metric("EPS (TTM)", _fmt2(stats.get("EPS_TTM")))
-            st.caption("ETF 近四次配息合計")
+            st.metric("EPS (TTM)", _fmt2(stats.get("EPS_TTM"))); st.caption("ETF 近四次配息合計")
 
         # ======= 風險摘要 =======
-        msg = []
-        if (stats.get("Treynor") or 0) < 0.5:
-            msg.append("Treynor 未達標。")
-        if (stats.get("Sharpe") or 0) > (stats.get("Treynor") or 0) + 0.6:
-            msg.append("Sharpe 明顯高於 Treynor，代表市場曝險過高。")
-        if msg:
-            st.warning("  ".join(f"• {m}" for m in msg))
+        grades = {"Alpha": grade_alpha(stats.get("Alpha")), "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")), "Treynor": grade_treynor(stats.get("Treynor"))}
+        crit, warn, _ = summarize(grades)
+        if crit: st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
+        elif warn: st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
+        else: st.success("✅ 指標狀態良好。")
 
-        # ======= 圖表 =======
+        # ======= 系統/非系統性風險提示 =======
+        from portfolio_risk_utils import diversification_warning
+        msg = diversification_warning(stats.get("Sharpe Ratio"), stats.get("Treynor"),
+                                      non_sys_thr=float(st.session_state.get("non_sys_thr", 0.5)),
+                                      sys_thr=float(st.session_state.get("sys_thr", 0.5)))
+        if msg: st.warning(msg)
+
+        # ======= 圖 =======
         fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
         st.plotly_chart(fig, use_container_width=True)
         madr = stats.get("MADR")
