@@ -106,7 +106,6 @@ def plot_candlestick_with_indicators(
       1) Candlestick + MA(5/10/20) + Bollinger Bands(20, 2σ)
       2) RSI(14) with 70/30 reference lines
       3) MACD(12,26,9) histogram + line + KDJ-J (secondary y)
-    **包含 rangebreaks：隱藏週末與其他修市日，避免所有子圖出現縫隙**
     """
     data = _ensure_ohlc(df)
     if data.empty:
@@ -118,12 +117,14 @@ def plot_candlestick_with_indicators(
     kdj_j = _kdj_j(data)
     rsi = _rsi(data["Close"])
 
+    # 提升 MACD 子圖高度讓柱狀更明顯（僅版面配置）
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-        row_heights=[0.56, 0.18, 0.26], specs=[[{}], [{}], [{"secondary_y": True}]],
+        row_heights=[0.54, 0.16, 0.30],  # ↑ third row taller
+        specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
-    # Row 1: K + MA + BB（全部「連續實線」）
+    # Row 1: K + MA + BB
     fig.add_trace(
         go.Candlestick(
             x=data.index, open=data["Open"], high=data["High"], low=data["Low"], close=data["Close"],
@@ -161,7 +162,7 @@ def plot_candlestick_with_indicators(
         row=1, col=1,
     )
 
-    # Row 2: RSI（實線 + 70/30 參考線）
+    # Row 2: RSI
     fig.add_trace(
         go.Scatter(
             x=rsi.index, y=rsi, name="RSI(14)",
@@ -169,12 +170,18 @@ def plot_candlestick_with_indicators(
         ),
         row=2, col=1,
     )
-    for yv, nm in [(80, "80"), (20, "20")]:
+    for yv in (70, 30):
         fig.add_hline(y=yv, line_width=1, line_dash="solid", row=2, col=1)
 
-    # Row 3: MACD histogram + line（實線） + KDJ-J（次 y 軸）
+    # Row 3: MACD histogram + line + KDJ-J
     fig.add_trace(
-        go.Bar(x=macd_h.index, y=macd_h["HIST"], name="MACD-Hist", opacity=0.85),
+        go.Bar(
+            x=macd_h.index,
+            y=macd_h["HIST"],
+            name="MACD-Hist",
+            opacity=1.0,                      # 更實心
+            marker_line_width=0               # 去邊線，視覺更飽滿
+        ),
         row=3, col=1, secondary_y=False,
     )
     fig.add_trace(
@@ -207,6 +214,8 @@ def plot_candlestick_with_indicators(
         margin=dict(l=8, r=8, t=36, b=8),
         hovermode="x unified",
     )
+    # 移動圖例到左上，避免與右上 modebar 重疊（只改位置）
+    fig.update_layout(legend=dict(x=0, xanchor="left"))
 
     # y 軸與網格
     fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor",
@@ -220,22 +229,5 @@ def plot_candlestick_with_indicators(
     fig.update_yaxes(showgrid=True, gridwidth=1, row=2, col=1)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=3, col=1, secondary_y=False)
     fig.update_yaxes(showgrid=False, row=3, col=1, secondary_y=True)
-
-    # ---------------------------
-    # 重要：隱藏修市日期（無縫）
-    # ---------------------------
-    try:
-        idx = pd.to_datetime(data.index).normalize()
-        all_days = pd.date_range(idx.min(), idx.max(), freq="D")
-        trading_days = pd.DatetimeIndex(idx.unique())
-        non_trading = all_days.difference(trading_days)
-        # 套用到所有 x 軸（含子圖）
-        fig.update_xaxes(rangebreaks=[
-            dict(bounds=["sat", "mon"]),   # 跳過週末
-            dict(values=non_trading),      # 跳過其他非交易日（國定假日等）
-        ])
-    except Exception:
-        # 為穩定性，任何異常都略過，不影響主圖
-        pass
 
     return fig
