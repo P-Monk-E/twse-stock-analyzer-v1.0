@@ -8,18 +8,15 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 只保留「全螢幕」按鈕
+# 只保留「全螢幕」按鈕；允許滾輪縮放
 PLOTLY_TV_CONFIG = {
     "displaylogo": False,
-    "scrollZoom": True,
+    "scrollZoom": True,                      # 滾輪縮放
     "modeBarButtonsToAdd": ["toggleFullscreen"],
     "modeBarButtonsToRemove": [
-        # 常見 2D 操作
         "zoom2d", "pan2d", "select2d", "lasso2d",
         "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d",
-        # 比較/最近點、標線
         "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
-        # 其他
         "toImage"
     ],
     "toImageButtonOptions": {"format": "png"},
@@ -175,22 +172,24 @@ def plot_candlestick_with_indicators(
         row=3, col=1, secondary_y=True,
     )
 
-    # 版面（圖例置上方靠左，避免與右上 modebar 重疊）
+    # 版面（拖曳＝平移；圖例在底部）
     fig.update_layout(
         title=title or "",
         xaxis_rangeslider_visible=False,
         uirevision=uirevision_key,
-        legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="left", x=0),
-        margin=dict(l=8, r=8, t=64, b=8),
+        dragmode="pan",                                 # 左鍵拖曳＝平移
         hovermode="x unified",
+        legend=dict(orientation="h", x=0, xanchor="left", y=-0.15, yanchor="top"),
+        margin=dict(l=8, r=8, t=48, b=72),             # b 加大讓圖例不擠壓
     )
 
-    # y 軸與網格
-    fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor",
-                     showline=True, ticks="outside", row=1, col=1)
-    fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
-    fig.update_yaxes(title_text="MACD", zeroline=True, row=3, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="KDJ-J", range=[-0.2, 1.2], row=3, col=1, secondary_y=True)
+    # y 軸固定範圍 → 滾輪只縮放 X；避免垂直拖曳
+    fig.update_yaxes(fixedrange=True, row=1, col=1)
+    fig.update_yaxes(title_text="RSI", range=[0, 100], fixedrange=True, row=2, col=1)
+    fig.update_yaxes(title_text="MACD", zeroline=True, fixedrange=True, row=3, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="KDJ-J", range=[-0.2, 1.2], fixedrange=True, row=3, col=1, secondary_y=True)
+
+    # 網格
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=1, col=1)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=2, col=1)
