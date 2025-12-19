@@ -1,12 +1,10 @@
 # =========================================
 # /mnt/data/chart_utils.py
-# 主圖：K + MA5/10/20 + BB20±2
-# 中圖：RSI(14)
-# 下圖：MACD 柱體(12,26,9) + KDJ J(9,3,3)
-# 互動：滾輪縮放、統一日期線、移除休市日/假日、60m 夜間
+# K + MA5/10/20 + BB20±2 ；RSI(14)；MACD Hist + KDJ J
+# 統一日期線；移除休市日/假日；60m 移除夜間
 # =========================================
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Iterable
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -19,7 +17,58 @@ PLOTLY_TV_CONFIG = {
     "toImageButtonOptions": {"format": "png"},
 }
 
-# -------- indicator helpers --------
+# ---------- robust OHLC standardizer ----------
+def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """標準化成帶 DatetimeIndex 的 OHLC；解決欄名大小寫/Date 欄/時區/排序等問題。"""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+
+    tmp = df.copy()
+
+    # 1) 取日期索引
+    if not isinstance(tmp.index, pd.DatetimeIndex):
+        # 常見情況：有 Date/Datetime 欄
+        for c in ["Date", "date", "Datetime", "datetime", "Time", "time"]:
+            if c in tmp.columns:
+                tmp[c] = pd.to_datetime(tmp[c], errors="coerce")
+                tmp = tmp.set_index(c)
+                break
+    if not isinstance(tmp.index, pd.DatetimeIndex):
+        try:
+            tmp.index = pd.to_datetime(tmp.index, errors="coerce")
+        except Exception:
+            pass
+
+    # 2) 去時區（為了 yfinance 與 Plotly）
+    if isinstance(tmp.index, pd.DatetimeIndex):
+        if tmp.index.tz is not None:
+            tmp.index = tmp.index.tz_convert(None)
+        else:
+            # 有些來源混入 tz-aware 值，保守處理
+            tmp.index = pd.to_datetime(tmp.index, utc=False)
+
+    # 3) 欄名標準化
+    cols = {c.lower(): c for c in tmp.columns}
+    def pick(name: str) -> Optional[str]:
+        return cols.get(name.lower())
+
+    o = pick("Open") or pick("open")
+    h = pick("High") or pick("high")
+    l = pick("Low") or pick("low")
+    c = pick("Close") or pick("close")
+    if not all([o, h, l, c]):
+        # 無法對應，回傳空
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+
+    out = tmp[[o, h, l, c]].rename(columns={o: "Open", h: "High", l: "Low", c: "Close"})
+
+    # 4) 數值轉型、排序、去重、去 NA
+    out = out.apply(pd.to_numeric, errors="coerce")
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+    out = out.dropna(how="any")
+    return out
+
+# ---------- 指標 ----------
 def _ma(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["MA5"] = out["Close"].rolling(5).mean()
@@ -62,11 +111,12 @@ def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     rsi.name = "RSI"
     return rsi
 
-# -------- range breaks (no holidays/weekends; hide night hours for 60m) --------
+# ---------- 休市日/夜間移除 ----------
 def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]:
     if not isinstance(idx, pd.DatetimeIndex) or idx.empty:
         return []
     breaks = [dict(bounds=["sat", "mon"])]
+    # 假日：工作日但沒有資料
     all_days = pd.date_range(idx.min().normalize(), idx.max().normalize(), freq="D")
     trade_days = pd.DatetimeIndex(pd.to_datetime(idx.date)).unique()
     non_trade = all_days.difference(trade_days)
@@ -74,24 +124,21 @@ def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]
     if len(weekday_non_trade) > 0:
         breaks.append(dict(values=weekday_non_trade))
     if is_intraday:
-        breaks.append(dict(pattern="hour", bounds=[14, 9]))  # 14:00~09:00 不顯示
+        breaks.append(dict(pattern="hour", bounds=[14, 9]))  # 台股夜間
     return breaks
 
-# -------- main chart --------
+# ---------- 主圖 ----------
 def plot_candlestick_with_indicators(
     df: pd.DataFrame,
     title: str = "",
     height: int = 800,
     uirevision_key: Optional[str] = "tv_like",
 ) -> go.Figure:
-    if df is None or df.empty:
-        raise ValueError("Empty dataframe")
+    data = _ensure_ohlc(df)
+    if data.empty:
+        raise ValueError("Empty or invalid OHLC dataframe")
 
-    data = df.copy()
-    if not isinstance(data.index, pd.DatetimeIndex):
-        data.index = pd.to_datetime(data.index)
-
-    # 粗略判斷是否為 60m 內頻
+    # 60m 粗判斷
     is_intraday = False
     if len(data) > 2:
         step = data.index.to_series().diff().dt.total_seconds().median()
@@ -102,6 +149,7 @@ def plot_candlestick_with_indicators(
     macd_h = _macd_hist(data["Close"])
     kdj_j = _kdj_j(data)
     rsi = _rsi(data["Close"])
+
     breaks = _compute_rangebreaks(data.index, is_intraday=is_intraday)
 
     fig = make_subplots(
@@ -109,10 +157,11 @@ def plot_candlestick_with_indicators(
         row_heights=[0.56, 0.18, 0.26], specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
-    # Row1: Price + MA + BB
-    fig.add_trace(go.Candlestick(x=data.index, open=data["Open"], high=data["High"],
-                                 low=data["Low"], close=data["Close"], name="Price",
-                                 increasing_line_width=1, decreasing_line_width=1), row=1, col=1)
+    # Row1
+    fig.add_trace(go.Candlestick(
+        x=data.index, open=data["Open"], high=data["High"], low=data["Low"], close=data["Close"],
+        name="Price", increasing_line_width=1, decreasing_line_width=1
+    ), row=1, col=1)
     fig.add_trace(go.Scatter(x=data.index, y=data["MA5"], name="MA5"), row=1, col=1)
     fig.add_trace(go.Scatter(x=data.index, y=data["MA10"], name="MA10"), row=1, col=1)
     fig.add_trace(go.Scatter(x=data.index, y=data["MA20"], name="MA20"), row=1, col=1)
@@ -120,12 +169,12 @@ def plot_candlestick_with_indicators(
     fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_UPPER"], name="+2σ", line=dict(dash="dot")), row=1, col=1)
     fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_LOWER"], name="-2σ", line=dict(dash="dot")), row=1, col=1)
 
-    # Row2: RSI
+    # Row2：RSI
     fig.add_trace(go.Scatter(x=rsi.index, y=rsi, name="RSI(14)"), row=2, col=1)
     fig.add_hline(y=70, line_dash="dot", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", row=2, col=1)
 
-    # Row3: MACD hist + KDJ J
+    # Row3：MACD Hist + KDJ J
     fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.75),
                   row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=kdj_j.index, y=kdj_j, name="KDJ J", mode="lines"),
