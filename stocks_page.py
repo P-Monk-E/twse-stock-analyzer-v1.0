@@ -1,5 +1,5 @@
 # =========================================
-# /mnt/data/stocks_page.py  （同步引用新版圖表，無邏輯變更）
+# stocks_page.py  (覆蓋；邏輯不變，只沿用新圖表)
 # =========================================
 from __future__ import annotations
 import math
