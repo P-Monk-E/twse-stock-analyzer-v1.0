@@ -1,7 +1,7 @@
 # =========================================
 # /mnt/data/chart_utils.py
 # TV-like 互動 K 線：滑輪縮放、十字線、保留縮放狀態、無 rangeslider
-# 並提供 MA 與基礎重採樣工具。
+# 並提供 MA 與重採樣工具。
 # =========================================
 from __future__ import annotations
 
