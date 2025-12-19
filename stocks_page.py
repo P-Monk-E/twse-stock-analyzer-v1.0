@@ -1,7 +1,3 @@
-# ================================
-# /mnt/data/stocks_page.py
-# 股票頁：60m/日K；少一天自動回補；嚴格分流；OHLC 標準化
-# ================================
 from __future__ import annotations
 import math
 from typing import Optional, Tuple
@@ -24,19 +20,19 @@ def _fmt0(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x
 
 def _normalize_tw_ticker(sym: str) -> str:
     s = str(sym).upper().strip()
-    return s if s.endswith((".TW", ".TWO")) or s.startswith("^") else f"{s}.TW"
+    return s if s.endswith((".TW",".TWO")) or s.startswith("^") else f"{s}.TW"
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _download_ohlc_60m(ticker: str, period: str = "90d") -> pd.DataFrame:
+def _download_ohlc_60m(ticker: str, period: str="90d") -> pd.DataFrame:
     try:
         df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
         return _ensure_ohlc(df)
     except Exception:
-        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+        return pd.DataFrame(columns=["Open","High","Low","Close"])
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
-    for idx in ["^TWII", "^TAIEX", "^GSPC"]:
+    for idx in ["^TWII","^TAIEX","^GSPC"]:
         try:
             h = yf.Ticker(idx).history(start=start, end=end, auto_adjust=False)
             if h is not None and not h.empty and "Close" in h:
@@ -46,8 +42,7 @@ def _market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.
     return None
 
 def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.DataFrame, str]:
-    if tf == "60m":
-        return _download_ohlc_60m(ticker, "90d"), "（60 分鐘）"
+    if tf == "60m": return _download_ohlc_60m(ticker, "90d"), "（60 分鐘）"
     return daily_df.copy(), "（日 K）"
 
 def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
@@ -60,31 +55,31 @@ def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         return _ensure_ohlc(df)
 
-def _tpe_time_range(days: int = 366) -> tuple[pd.Timestamp, pd.Timestamp]:
+def _tpe_time_range(days: int=366) -> tuple[pd.Timestamp, pd.Timestamp]:
     tz = pytz.timezone("Asia/Taipei")
     now_tpe = pd.Timestamp.now(tz=tz)
-    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)  # yfinance 右開區間緩衝
+    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)
     start_aware = end_aware - pd.Timedelta(days=days)
     return start_aware.tz_convert(None), end_aware.tz_convert(None)
 
-def _kpi_grid(items: list[tuple[str, str, str]], cols: int = 5) -> None:
+def _kpi_grid(items: list[tuple[str,str,str]], cols: int=5) -> None:
     if not items: return
     it = iter(items)
-    for _ in range((len(items) + cols - 1) // cols):
+    for _ in range((len(items)+cols-1)//cols):
         cs = st.columns(cols)
         for c in cs:
-            try: n, v, h = next(it)
+            try: n,v,h = next(it)
             except StopIteration: break
             with c: st.metric(label=n, value=v, help=h or None)
 
-def render(prefill_symbol: Optional[str] = None) -> None:
+def render(prefill_symbol: Optional[str]=None) -> None:
     st.header("股票")
-    c1, c2 = st.columns([3, 2])
+    c1, c2 = st.columns([3,2])
     with c1:
-        default_kw = prefill_symbol or st.session_state.get("last_stock_kw", "2330")
+        default_kw = prefill_symbol or st.session_state.get("last_stock_kw","2330")
         keyword = st.text_input("輸入股票代碼或名稱", value=default_kw)
     with c2:
-        tf = st.radio("K 線週期", options=["60m", "日"], index=1, horizontal=True)
+        tf = st.radio("K 線週期", options=["60m","日"], index=1, horizontal=True)
 
     if not keyword:
         st.info("請輸入關鍵字（例：2330 或 台積電）"); return
@@ -98,7 +93,6 @@ def render(prefill_symbol: Optional[str] = None) -> None:
             st.warning("這是 ETF，請改至「ETF」分頁查詢。"); return
 
         start, end = _tpe_time_range(366)
-
         market_close = _market_close_series(start, end)
         if market_close is None:
             st.error("抓不到市場指數收盤價（^TWII/^TAIEX/^GSPC）"); return
@@ -107,7 +101,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         stats = get_metrics(ticker, market_close, rf, start, end, is_etf=False)
         if not stats: st.error("查無此標的的歷史資料。"); return
 
-        base_df: pd.DataFrame = _ensure_ohlc(stats["df"])
+        base_df = _ensure_ohlc(stats["df"])
         base_df = _backfill_latest_daily(ticker, base_df)
 
         with st.container(border=True):
@@ -143,5 +137,5 @@ def render(prefill_symbol: Optional[str] = None) -> None:
     except Exception as e:
         st.error(f"❌ 查詢股票失敗：{e}")
 
-def show(prefill_symbol: Optional[str] = None) -> None:
+def show(prefill_symbol: Optional[str]=None) -> None:
     render(prefill_symbol=prefill_symbol)
