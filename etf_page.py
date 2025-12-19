@@ -1,45 +1,3 @@
-# =========================================
-# /mnt/data/etf_page.py
-# 60m/日K；日期線貫穿；不顯示休市日；少一天自動回補；修正 tz-naive 錯誤；只允許 ETF
-# =========================================
-from __future__ import annotations
-from typing import Optional, Tuple
-
-import pandas as pd
-import streamlit as st
-import yfinance as yf
-import pytz
-
-from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
-from portfolio_risk_utils import diversification_warning
-from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
-from chart_utils import plot_candlestick_with_indicators, PLOTLY_TV_CONFIG
-
-def _normalize_tw_ticker(sym: str) -> str:
-    s = str(sym).upper().strip()
-    return s if s.endswith((".TW", ".TWO")) or s.startswith("^") else f"{s}.TW"
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def _download_ohlc_60m(ticker: str, period: str = "90d") -> pd.DataFrame:
-    try:
-        df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        return df[["Open", "High", "Low", "Close"]].dropna(how="any")
-    except Exception:
-        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def _market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
-    for idx in ["^TWII", "^TAIEX", "^GSPC"]:
-        try:
-            h = yf.Ticker(idx).history(start=start, end=end, auto_adjust=False)
-            if h is not None and not h.empty and "Close" in h:
-                s = h["Close"].copy(); s.name = idx; return s
-        except Exception:
-            continue
-    return None
-
 def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.DataFrame, str]:
     if tf == "60m":
         return _download_ohlc_60m(ticker, "90d"), "（60 分鐘）"
@@ -48,14 +6,12 @@ def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.Dat
 def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
     try:
         tail = yf.Ticker(_normalize_tw_ticker(ticker)).history(period="7d", interval="1d", auto_adjust=False)
-        if tail is None or tail.empty:
-            return df
-        tail = tail[["Open", "High", "Low", "Close"]].dropna(how="any")
-        out = pd.concat([df[["Open", "High", "Low", "Close"]], tail])
-        out = out[~out.index.duplicated(keep="last")]
-        return out.sort_index()
+        tail = _ensure_ohlc(tail)
+        out = pd.concat([_ensure_ohlc(df), tail])
+        out = out[~out.index.duplicated(keep="last")].sort_index()
+        return out
     except Exception:
-        return df
+        return _ensure_ohlc(df)
 
 def _tpe_time_range(days: int = 366) -> tuple[pd.Timestamp, pd.Timestamp]:
     tz = pytz.timezone("Asia/Taipei")
@@ -116,16 +72,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         if warn: st.warning("注意項：" + "、".join(warn))
         if good: st.success("達標：" + "、".join(good))
 
-        msg = diversification_warning(
-            stats.get("Sharpe Ratio"), stats.get("Treynor"),
-            non_sys_thr=float(st.session_state.get("non_sys_thr", 0.5)),
-            sys_thr=float(st.session_state.get("sys_thr", 0.5)),
-        )
-        if msg: st.warning(msg)
-
-        base_df: pd.DataFrame = stats["df"].copy()
-        if not isinstance(base_df.index, pd.DatetimeIndex):
-            base_df.index = pd.to_datetime(base_df.index)
+        base_df: pd.DataFrame = _ensure_ohlc(stats["df"])
         base_df = _backfill_latest_daily(ticker, base_df)
 
         _kpi_grid([
