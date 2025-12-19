@@ -1,6 +1,6 @@
 # =========================================
 # /mnt/data/etf_page.py
-# 修正：find_ticker_by_name 僅回傳代碼 → 只接 1 值；name 由 TICKER_NAME_MAP 取
+# 修正：get_metrics 參數 + find_ticker_by_name 只回傳代碼
 # 功能：60m/日/週/月 K 線、滑輪縮放、十字線、show() 相容 app.py
 # =========================================
 from __future__ import annotations
@@ -16,15 +16,33 @@ from portfolio_risk_utils import diversification_warning
 from stock_utils import find_ticker_by_name, get_metrics, TICKER_NAME_MAP
 from chart_utils import plot_candlestick_with_ma, resample_ohlc, PLOTLY_TV_CONFIG
 
+# --------- 市場／價格工具 ---------
+def _normalize_tw_ticker_once(sym: str) -> str:
+    s = str(sym).upper().strip()
+    return s if s.endswith((".TW", ".TWO")) or s.startswith("^") else f"{s}.TW"
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "60d") -> pd.DataFrame:
     try:
-        df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
+        df = yf.Ticker(_normalize_tw_ticker_once(ticker)).history(period=period, interval=interval)
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         return df[["Open", "High", "Low", "Close"]].dropna(how="any")
     except Exception:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
+    for idx in ["^TWII", "^TAIEX", "^GSPC"]:
+        try:
+            h = yf.Ticker(idx).history(start=start, end=end)
+            if h is not None and not h.empty and "Close" in h:
+                s = h["Close"].copy()
+                s.name = idx
+                return s
+        except Exception:
+            continue
+    return None
 
 def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> Tuple[pd.DataFrame, str]:
     if tf_label == "60m":
@@ -41,6 +59,7 @@ def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> T
         note = "（月 K）"
     return df, note
 
+# --------- 主頁面 ---------
 def render(prefill_symbol: Optional[str] = None) -> None:
     st.header("ETF")
     col1, col2 = st.columns([3, 2])
@@ -55,12 +74,20 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         return
 
     try:
-        # 修正重點：find_ticker_by_name 只回傳代碼
-        ticker = find_ticker_by_name(keyword)
+        ticker = find_ticker_by_name(keyword)  # 只回代碼
         name = TICKER_NAME_MAP.get(ticker, "")
         st.session_state["last_etf_kw"] = keyword
 
-        stats = get_metrics(ticker)
+        # ---- 準備 get_metrics 需要的參數 ----
+        end = pd.Timestamp.today().normalize()
+        start = end - pd.Timedelta(days=365)
+        market_close = _get_market_close_series(start, end)
+        if market_close is None:
+            raise RuntimeError("抓不到市場指數收盤價（^TWII/^TAIEX/^GSPC）")
+        rf = 0.01
+
+        stats = get_metrics(ticker, market_close, rf, start, end, is_etf=True)
+
         st.subheader(f"{name or ticker}（{ticker}）")
 
         sharpe = stats.get("Sharpe Ratio")
