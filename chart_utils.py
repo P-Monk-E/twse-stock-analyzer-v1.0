@@ -8,12 +8,13 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 只保留「全螢幕」按鈕；允許滾輪縮放
+# 只保留「全螢幕」；允許滾輪縮放
 PLOTLY_TV_CONFIG = {
     "displaylogo": False,
-    "scrollZoom": True,                      # 滾輪縮放
+    "scrollZoom": True,                      # 滾輪縮放（X 軸）
     "modeBarButtonsToAdd": ["toggleFullscreen"],
     "modeBarButtonsToRemove": [
+        # 移除所有會觸發框選/放大的工具
         "zoom2d", "pan2d", "select2d", "lasso2d",
         "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d",
         "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
@@ -172,18 +173,18 @@ def plot_candlestick_with_indicators(
         row=3, col=1, secondary_y=True,
     )
 
-    # 版面（拖曳＝平移；圖例在底部）
+    # 版面：左鍵拖曳＝平移；圖例在底部
     fig.update_layout(
         title=title or "",
         xaxis_rangeslider_visible=False,
         uirevision=uirevision_key,
-        dragmode="pan",                                 # 左鍵拖曳＝平移
+        dragmode="pan",                                 # 只允許平移（左鍵）
         hovermode="x unified",
         legend=dict(orientation="h", x=0, xanchor="left", y=-0.15, yanchor="top"),
-        margin=dict(l=8, r=8, t=48, b=72),             # b 加大讓圖例不擠壓
+        margin=dict(l=8, r=8, t=48, b=72),             # b 加大讓底部圖例不重疊
     )
 
-    # y 軸固定範圍 → 滾輪只縮放 X；避免垂直拖曳
+    # y 軸固定範圍 → 滾輪只縮放 X；避免任何框選縮放
     fig.update_yaxes(fixedrange=True, row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], fixedrange=True, row=2, col=1)
     fig.update_yaxes(title_text="MACD", zeroline=True, fixedrange=True, row=3, col=1, secondary_y=False)
