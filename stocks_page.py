@@ -1,7 +1,6 @@
 # =========================================
 # /mnt/data/stocks_page.py
-# 60m/日K；補到最新交易日（台北時區 +2 天）+ 7d 回補；不顯示休市日；三圖共用日期線
-# 嚴格分流：只允許個股
+# 修復 tz-naive 錯誤；60m/日K；日期線貫穿；移除休市日；少一天自動回補
 # =========================================
 from __future__ import annotations
 
@@ -20,7 +19,6 @@ from risk_grading import (
     grade_debt_equity, grade_current_ratio, grade_roe, summarize,
 )
 
-# ----- format helpers -----
 def _fmt2(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
 def _fmt2pct(x: Optional[float]) -> str:
@@ -28,7 +26,6 @@ def _fmt2pct(x: Optional[float]) -> str:
 def _fmt0(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
 
-# ----- data helpers -----
 def _normalize_tw_ticker(sym: str) -> str:
     s = str(sym).upper().strip()
     return s if s.endswith((".TW", ".TWO")) or s.startswith("^") else f"{s}.TW"
@@ -60,7 +57,7 @@ def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.Dat
     return daily_df.copy(), "（日 K）"
 
 def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
-    """以 7d 歷史回補尾端，索引去重後排序。"""
+    """缺最近交易日時，使用 7d 日線補尾端（索引去重）"""
     try:
         tail = yf.Ticker(_normalize_tw_ticker(ticker)).history(period="7d", interval="1d", auto_adjust=False)
         if tail is None or tail.empty:
@@ -71,6 +68,14 @@ def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
         return out.sort_index()
     except Exception:
         return df
+
+def _tpe_time_range(days: int = 366) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """回傳 tz-naive 的 (start, end)。先在 TPE 時區計算，再一次轉換去時區。"""
+    tz = pytz.timezone("Asia/Taipei")
+    now_tpe = pd.Timestamp.now(tz=tz)
+    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)  # 右開區間緩衝
+    start_aware = end_aware - pd.Timedelta(days=days)
+    return start_aware.tz_convert(None), end_aware.tz_convert(None)
 
 def _kpi_grid(items: list[tuple[str, str, str]], cols: int = 5) -> None:
     if not items: return
@@ -85,7 +90,6 @@ def _kpi_grid(items: list[tuple[str, str, str]], cols: int = 5) -> None:
             with c:
                 st.metric(label=name, value=val, help=hp or None)
 
-# ----- page -----
 def render(prefill_symbol: Optional[str] = None) -> None:
     st.header("股票")
     c1, c2 = st.columns([3, 2])
@@ -106,10 +110,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         if is_etf(ticker):
             st.warning("這是 ETF，請改至「ETF」分頁查詢。"); return
 
-        tz = pytz.timezone("Asia/Taipei")
-        now_tpe = pd.Timestamp.now(tz=tz)
-        end = (now_tpe.normalize() + pd.Timedelta(days=2)).tz_convert(None)   # 右開區間 → +2 天
-        start = (end - pd.Timedelta(days=366)).tz_convert(None)
+        start, end = _tpe_time_range(366)
 
         market_close = _market_close_series(start, end)
         if market_close is None:
