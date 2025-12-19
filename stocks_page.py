@@ -1,6 +1,6 @@
 # =========================================
 # /mnt/data/stocks_page.py
-# 60m/日K；日期線貫穿；不顯示休市日；少一天自動回補；修正 tz-naive 錯誤；只允許個股
+# 60m/日K；tz 修正；少一天自動回補；嚴格分流；OHLC 標準化
 # =========================================
 from __future__ import annotations
 import math
@@ -12,13 +12,12 @@ import yfinance as yf
 import pytz
 
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
-from chart_utils import plot_candlestick_with_indicators, PLOTLY_TV_CONFIG
+from chart_utils import plot_candlestick_with_indicators, PLOTLY_TV_CONFIG, _ensure_ohlc
 from risk_grading import (
     grade_alpha, grade_sharpe, grade_treynor,
     grade_debt_equity, grade_current_ratio, grade_roe, summarize,
 )
 
-# ---------- helpers ----------
 def _fmt2(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
 def _fmt2pct(x: Optional[float]) -> str:
@@ -34,9 +33,7 @@ def _normalize_tw_ticker(sym: str) -> str:
 def _download_ohlc_60m(ticker: str, period: str = "90d") -> pd.DataFrame:
     try:
         df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        return df[["Open", "High", "Low", "Close"]].dropna(how="any")
+        return _ensure_ohlc(df)
     except Exception:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
@@ -57,23 +54,19 @@ def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.Dat
     return daily_df.copy(), "（日 K）"
 
 def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
-    """缺最近交易日時，用 7d 日線補尾端（索引去重）"""
     try:
         tail = yf.Ticker(_normalize_tw_ticker(ticker)).history(period="7d", interval="1d", auto_adjust=False)
-        if tail is None or tail.empty:
-            return df
-        tail = tail[["Open", "High", "Low", "Close"]].dropna(how="any")
-        out = pd.concat([df[["Open", "High", "Low", "Close"]], tail])
-        out = out[~out.index.duplicated(keep="last")]
-        return out.sort_index()
+        tail = _ensure_ohlc(tail)
+        out = pd.concat([_ensure_ohlc(df), tail])
+        out = out[~out.index.duplicated(keep="last")].sort_index()
+        return out
     except Exception:
-        return df
+        return _ensure_ohlc(df)
 
 def _tpe_time_range(days: int = 366) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """回傳 tz-naive 的 (start, end)。避免 tz-naive 轉換錯誤。"""
     tz = pytz.timezone("Asia/Taipei")
     now_tpe = pd.Timestamp.now(tz=tz)
-    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)  # yfinance 右開區間緩衝
+    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)   # 避免右開區間少一天
     start_aware = end_aware - pd.Timedelta(days=days)
     return start_aware.tz_convert(None), end_aware.tz_convert(None)
 
@@ -87,7 +80,6 @@ def _kpi_grid(items: list[tuple[str, str, str]], cols: int = 5) -> None:
             except StopIteration: break
             with c: st.metric(label=n, value=v, help=h or None)
 
-# ---------- page ----------
 def render(prefill_symbol: Optional[str] = None) -> None:
     st.header("股票")
     c1, c2 = st.columns([3, 2])
@@ -118,9 +110,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         stats = get_metrics(ticker, market_close, rf, start, end, is_etf=False)
         if not stats: st.error("查無此標的的歷史資料。"); return
 
-        base_df: pd.DataFrame = stats["df"].copy()
-        if not isinstance(base_df.index, pd.DatetimeIndex):
-            base_df.index = pd.to_datetime(base_df.index)
+        base_df: pd.DataFrame = _ensure_ohlc(stats["df"])
         base_df = _backfill_latest_daily(ticker, base_df)
 
         with st.container(border=True):
