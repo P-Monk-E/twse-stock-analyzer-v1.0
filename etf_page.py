@@ -1,6 +1,7 @@
 # =========================================
 # /mnt/data/etf_page.py
-# 同步修正：資料慢一天補齊、休市日不顯示、60m/日切換
+# 60m/日K；補到最新交易日（台北時區 +2 天）+ 7d 回補；不顯示休市日；三圖共用日期線
+# 嚴格分流：只允許 ETF
 # =========================================
 from __future__ import annotations
 
@@ -52,7 +53,7 @@ def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
         if tail is None or tail.empty:
             return df
         tail = tail[["Open", "High", "Low", "Close"]].dropna(how="any")
-        out = pd.concat([df[["Open","High","Low","Close"]], tail])
+        out = pd.concat([df[["Open", "High", "Low", "Close"]], tail])
         out = out[~out.index.duplicated(keep="last")]
         return out.sort_index()
     except Exception:
@@ -79,6 +80,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
 
     if not keyword:
         st.info("請輸入關鍵字（例：0050 或 台灣50）"); return
+
     try:
         ticker = find_ticker_by_name(keyword)
         name = TICKER_NAME_MAP.get(ticker, "")
@@ -139,6 +141,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         title = f"{name or ticker}（{ticker}）技術圖 {tf_note}"
         fig = plot_candlestick_with_indicators(tf_df, title=title, uirevision_key=f"{ticker}_{tf}")
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_TV_CONFIG)
+
     except Exception as e:
         st.error(f"❌ 查詢 ETF 失敗：{e}")
 
