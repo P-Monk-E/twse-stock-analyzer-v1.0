@@ -1,5 +1,5 @@
 # =========================================
-# /mnt/data/etf_page.py  （同步引用新版圖表，無邏輯變更）
+# etf_page.py  (覆蓋；邏輯不變，只沿用新圖表)
 # =========================================
 from __future__ import annotations
 from typing import Optional, Tuple
@@ -22,7 +22,7 @@ def _normalize_tw_ticker(sym: str) -> str:
 def _download_ohlc_60m(ticker: str, period: str="90d") -> pd.DataFrame:
     try:
         df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
-        return _ensure_ohlc(df)
+        return _ensure_oh lc(df)  # 修：確保清洗
     except Exception:
         return pd.DataFrame(columns=["Open","High","Low","Close"])
 
@@ -79,7 +79,6 @@ def render(prefill_symbol: Optional[str]=None) -> None:
 
     if not keyword:
         st.info("請輸入關鍵字（例：0050 或 台灣50）"); return
-
     try:
         ticker = find_ticker_by_name(keyword)
         name   = TICKER_NAME_MAP.get(ticker, "")
@@ -102,14 +101,14 @@ def render(prefill_symbol: Optional[str]=None) -> None:
 
         with st.container(border=True):
             st.subheader(f"{name or ticker}（{ticker}）")
-            warn = diversification_warning(ticker)
-            if warn: st.warning(warn)
+            div_warn = diversification_warning(ticker)
+            if div_warn: st.warning(div_warn)
             grades = {"Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
                       "Treynor": grade_treynor(stats.get("Treynor")),
                       "Alpha":  grade_alpha(stats.get("Alpha"))}
-            crit, w, good = summarize(grades)
+            crit, warn, good = summarize(grades)
             if crit: st.error("關鍵風險：" + "、".join(crit))
-            if w:    st.warning("注意項：" + "、".join(w))
+            if warn: st.warning("注意項：" + "、".join(warn))
             if good: st.success("達標：" + "、".join(good))
 
         tf_df, tf_note = _prepare_tf_df(ticker, base_df, tf)
