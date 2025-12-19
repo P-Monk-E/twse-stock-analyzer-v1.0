@@ -1,7 +1,7 @@
-# =========================================
+# ================================
 # /mnt/data/stocks_page.py
-# 60m/日K；tz 修正；少一天自動回補；嚴格分流；OHLC 標準化
-# =========================================
+# 股票頁：60m/日K；少一天自動回補；嚴格分流；OHLC 標準化
+# ================================
 from __future__ import annotations
 import math
 from typing import Optional, Tuple
@@ -18,12 +18,9 @@ from risk_grading import (
     grade_debt_equity, grade_current_ratio, grade_roe, summarize,
 )
 
-def _fmt2(x: Optional[float]) -> str:
-    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
-def _fmt2pct(x: Optional[float]) -> str:
-    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x*100:.2f}%"
-def _fmt0(x: Optional[float]) -> str:
-    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
+def _fmt2(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
+def _fmt2pct(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x*100:.2f}%"
+def _fmt0(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
 
 def _normalize_tw_ticker(sym: str) -> str:
     s = str(sym).upper().strip()
@@ -66,7 +63,7 @@ def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
 def _tpe_time_range(days: int = 366) -> tuple[pd.Timestamp, pd.Timestamp]:
     tz = pytz.timezone("Asia/Taipei")
     now_tpe = pd.Timestamp.now(tz=tz)
-    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)   # 避免右開區間少一天
+    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)  # yfinance 右開區間緩衝
     start_aware = end_aware - pd.Timedelta(days=days)
     return start_aware.tz_convert(None), end_aware.tz_convert(None)
 
