@@ -1,9 +1,11 @@
 # =========================================
 # /mnt/data/chart_utils.py
-# (未改動) 主圖 K+MA+BB；中圖 RSI；下圖 MACD 柱體 + KDJ(J)
+# 主圖：K + MA5/10/20 + BB20±2
+# 中圖：RSI(14)
+# 下圖：MACD 柱體(12,26,9) + KDJ J(9,3,3)
+# 互動：滾輪縮放、統一日期線、移除休市日/假日、60m 夜間
 # =========================================
 from __future__ import annotations
-
 from typing import Optional
 import numpy as np
 import pandas as pd
@@ -17,6 +19,7 @@ PLOTLY_TV_CONFIG = {
     "toImageButtonOptions": {"format": "png"},
 }
 
+# -------- indicator helpers --------
 def _ma(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["MA5"] = out["Close"].rolling(5).mean()
@@ -59,6 +62,7 @@ def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     rsi.name = "RSI"
     return rsi
 
+# -------- range breaks (no holidays/weekends; hide night hours for 60m) --------
 def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]:
     if not isinstance(idx, pd.DatetimeIndex) or idx.empty:
         return []
@@ -70,9 +74,10 @@ def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]
     if len(weekday_non_trade) > 0:
         breaks.append(dict(values=weekday_non_trade))
     if is_intraday:
-        breaks.append(dict(pattern="hour", bounds=[14, 9]))  # 台股夜間排除
+        breaks.append(dict(pattern="hour", bounds=[14, 9]))  # 14:00~09:00 不顯示
     return breaks
 
+# -------- main chart --------
 def plot_candlestick_with_indicators(
     df: pd.DataFrame,
     title: str = "",
@@ -86,6 +91,7 @@ def plot_candlestick_with_indicators(
     if not isinstance(data.index, pd.DatetimeIndex):
         data.index = pd.to_datetime(data.index)
 
+    # 粗略判斷是否為 60m 內頻
     is_intraday = False
     if len(data) > 2:
         step = data.index.to_series().diff().dt.total_seconds().median()
@@ -103,6 +109,7 @@ def plot_candlestick_with_indicators(
         row_heights=[0.56, 0.18, 0.26], specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
+    # Row1: Price + MA + BB
     fig.add_trace(go.Candlestick(x=data.index, open=data["Open"], high=data["High"],
                                  low=data["Low"], close=data["Close"], name="Price",
                                  increasing_line_width=1, decreasing_line_width=1), row=1, col=1)
@@ -113,14 +120,18 @@ def plot_candlestick_with_indicators(
     fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_UPPER"], name="+2σ", line=dict(dash="dot")), row=1, col=1)
     fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_LOWER"], name="-2σ", line=dict(dash="dot")), row=1, col=1)
 
+    # Row2: RSI
     fig.add_trace(go.Scatter(x=rsi.index, y=rsi, name="RSI(14)"), row=2, col=1)
     fig.add_hline(y=70, line_dash="dot", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", row=2, col=1)
 
+    # Row3: MACD hist + KDJ J
     fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.75),
                   row=3, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=kdj_j.index, y=kdj_j, name="KDJ J"), row=3, col=1, secondary_y=True)
+    fig.add_trace(go.Scatter(x=kdj_j.index, y=kdj_j, name="KDJ J", mode="lines"),
+                  row=3, col=1, secondary_y=True)
 
+    # 互動/外觀
     fig.update_layout(
         title=title, height=height, dragmode="pan",
         hovermode="x unified", uirevision=uirevision_key,
