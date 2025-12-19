@@ -136,8 +136,8 @@ def plot_candlestick_with_indicators(
         x=rsi.index, y=rsi, name="RSI(14)",
         mode="lines", connectgaps=True, line=dict(width=2, dash="solid")
     ), row=2, col=1)
-    fig.add_hline(y=70, line_dash="solid", row=2, col=1)
-    fig.add_hline(y=30, line_dash="solid", row=2, col=1)
+    fig.add_hline(y=80, line_dash="solid", row=2, col=1)
+    fig.add_hline(y=20, line_dash="solid", row=2, col=1)
 
     # Row 3: MACD 柱體 + KDJ J（J 為連續實線）
     fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.85),
@@ -180,3 +180,4 @@ def plot_candlestick_with_indicators(
     fig.update_yaxes(showgrid=True, gridwidth=1, row=3, col=1, secondary_y=False)
     fig.update_yaxes(showgrid=False, row=3, col=1, secondary_y=True)
     return fig
+
