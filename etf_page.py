@@ -1,22 +1,50 @@
 # =========================================
-# /mnt/data/etf_page.py
-# 加入 show(prefill_symbol) 與 60m/日/週/月 K 線切換（相容 app.py）
+# /mnt/data/stocks_page.py
+# 修正：find_ticker_by_name 僅回傳代碼 → 只接 1 值；name 由 TICKER_NAME_MAP 取
+# 功能：60m/日/週/月 K 線、滑輪縮放、十字線、show() 相容 app.py
 # =========================================
 from __future__ import annotations
 
+import math
 from typing import Optional, Tuple
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
-from portfolio_risk_utils import diversification_warning
-from stock_utils import find_ticker_by_name, get_metrics
+from stock_utils import (
+    find_ticker_by_name,
+    get_metrics,
+    is_etf,
+    TICKER_NAME_MAP,
+)
 from chart_utils import plot_candlestick_with_ma, resample_ohlc, PLOTLY_TV_CONFIG
+from risk_grading import (
+    grade_alpha,
+    grade_sharpe,
+    grade_treynor,
+    grade_debt_equity,
+    grade_current_ratio,
+    grade_roe,
+    summarize,
+)
+
+# --------- 格式工具 ---------
+def _fmt2(x: Optional[float]) -> str:
+    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
+
+def _fmt2pct(x: Optional[float]) -> str:
+    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x*100:.2f}%"
+
+def _fmt0(x: Optional[float]) -> str:
+    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
+
+def _icon(ok: str) -> str:
+    return "🟢" if ok == "A" else "🟡" if ok in ("B", "C") else "🟠" if ok == "D" else "🔴"
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "60d") -> pd.DataFrame:
+    """下載 60 分鐘線；失敗時回空 df。為何：避免整頁崩潰。"""
     try:
         df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
         if not isinstance(df.index, pd.DatetimeIndex):
@@ -26,6 +54,7 @@ def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "6
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
 def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> Tuple[pd.DataFrame, str]:
+    """回傳 60m/日/週/月 dataframe 與標題附註。"""
     if tf_label == "60m":
         df = _download_ohlc_intraday(ticker, "60m", "60d")
         note = "（60 分鐘）"
@@ -40,42 +69,50 @@ def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> T
         note = "（月 K）"
     return df, note
 
+# --------- 主頁面 ---------
 def render(prefill_symbol: Optional[str] = None) -> None:
-    st.header("ETF")
+    st.header("股票")
     col1, col2 = st.columns([3, 2])
     with col1:
-        default_kw = prefill_symbol or st.session_state.get("last_etf_kw", "0050")
-        keyword = st.text_input("輸入 ETF 代碼或名稱", value=default_kw)
+        default_kw = prefill_symbol or st.session_state.get("last_stock_kw", "2330")
+        keyword = st.text_input("輸入股票代碼或名稱", value=default_kw)
     with col2:
         tf_label = st.radio("K 線週期", options=["60m", "日", "週", "月"], index=1, horizontal=True)
 
     if not keyword:
-        st.info("請輸入關鍵字（例：0050 或 台灣50）")
+        st.info("請輸入關鍵字（例：2330 或 台積電）")
         return
 
     try:
-        ticker, name = find_ticker_by_name(keyword)
-        st.session_state["last_etf_kw"] = keyword
+        # 修正重點：find_ticker_by_name 只回傳代碼
+        ticker = find_ticker_by_name(keyword)
+        name = TICKER_NAME_MAP.get(ticker, "")
+        st.session_state["last_stock_kw"] = keyword
 
         stats = get_metrics(ticker)
-        st.subheader(f"{name or ticker}（{ticker}）")
 
-        sharpe = stats.get("Sharpe Ratio")
-        treynor = stats.get("Treynor")
-        alpha = stats.get("Alpha")
-        st.write(summarize(
-            grade_alpha(alpha),
-            grade_sharpe(sharpe),
-            grade_treynor(treynor),
-        ))
+        with st.container(border=True):
+            st.subheader(f"{name or ticker}（{ticker}）")
+            if is_etf(ticker):
+                st.warning("這看起來像是 ETF，建議改到「ETF」分頁查詢。")
 
-        msg = diversification_warning(
-            sharpe, treynor,
-            non_sys_thr=float(st.session_state.get("non_sys_thr", 0.5)),
-            sys_thr=float(st.session_state.get("sys_thr", 0.5)),
-        )
-        if msg:
-            st.warning(msg)
+            sharpe_grade = grade_sharpe(stats.get("Sharpe Ratio"))
+            treynor_grade = grade_treynor(stats.get("Treynor"))
+            alpha_grade = grade_alpha(stats.get("Alpha"))
+            de_grade = grade_debt_equity(stats.get("負債權益比"))
+            cur_grade = grade_current_ratio(stats.get("流動比率"))
+            roe_grade = grade_roe(stats.get("ROE"))
+            msg = summarize(sharpe_grade, treynor_grade, alpha_grade, de_grade, cur_grade, roe_grade)
+            st.write(msg)
+
+            equity = stats.get("Equity")
+            eps_ttm = stats.get("EPS_TTM")
+            v_roe = stats.get("ROE")
+            st.markdown(
+                f"**ROE**：{_fmt2pct(v_roe)} {_icon(roe_grade)} ｜ "
+                f"**股東權益**：{_fmt0(equity)} ｜ "
+                f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
+            )
 
         base_df: pd.DataFrame = stats["df"].copy()
         if not isinstance(base_df.index, pd.DatetimeIndex):
@@ -92,14 +129,15 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         madr = stats.get("MADR")
         st.caption(f"MADR：{madr:.4f}" if madr is not None and pd.notna(madr) else "MADR：—")
 
-        right = st.columns([1, 1, 1, 1, 1, 1, 1])[-1]
-        with right:
-            if st.button("＋加入觀察", use_container_width=True):
-                from watchlist_page import add_to_watchlist
-                add_to_watchlist(symbol_or_name=ticker, name=name, kind_kw="etf")
-                st.success("已加入觀察名單")
+        with st.container():
+            right = st.columns([1, 1, 1, 1, 1, 1, 1])[-1]
+            with right:
+                if st.button("＋加入觀察", use_container_width=True):
+                    from watchlist_page import add_to_watchlist
+                    add_to_watchlist(symbol_or_name=ticker, name=name, kind_kw="stock")
+                    st.success("已加入觀察名單")
     except Exception as e:
-        st.error(f"❌ 查詢 ETF 失敗：{e}")
+        st.error(f"❌ 查詢股票失敗：{e}")
 
 # 與 app.py 相容的入口
 def show(prefill_symbol: Optional[str] = None) -> None:
