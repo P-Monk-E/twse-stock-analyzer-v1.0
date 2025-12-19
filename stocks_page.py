@@ -1,6 +1,7 @@
 # =========================================
 # /mnt/data/stocks_page.py
-# 加入 show(prefill_symbol) 與 60m/日/週/月 K 線切換（相容 app.py）
+# 修正：get_metrics 參數 + find_ticker_by_name 只回傳代碼
+# 功能：60m/日/週/月 K 線、滑輪縮放、十字線、show() 相容 app.py
 # =========================================
 from __future__ import annotations
 
@@ -11,7 +12,12 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from stock_utils import find_ticker_by_name, get_metrics, is_etf
+from stock_utils import (
+    find_ticker_by_name,
+    get_metrics,
+    is_etf as _is_etf_func,
+    TICKER_NAME_MAP,
+)
 from chart_utils import plot_candlestick_with_ma, resample_ohlc, PLOTLY_TV_CONFIG
 from risk_grading import (
     grade_alpha,
@@ -36,21 +42,38 @@ def _fmt0(x: Optional[float]) -> str:
 def _icon(ok: str) -> str:
     return "🟢" if ok == "A" else "🟡" if ok in ("B", "C") else "🟠" if ok == "D" else "🔴"
 
+# --------- 市場／價格工具 ---------
+def _normalize_tw_ticker_once(sym: str) -> str:
+    s = str(sym).upper().strip()
+    return s if s.endswith((".TW", ".TWO")) or s.startswith("^") else f"{s}.TW"
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "60d") -> pd.DataFrame:
-    """下載 60 分鐘線資料；失敗時回空 df（避免整頁爆炸）。"""
+    """避免整頁崩潰，所以錯誤時回空 DataFrame。"""
     try:
-        df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
+        df = yf.Ticker(_normalize_tw_ticker_once(ticker)).history(period=period, interval=interval)
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         return df[["Open", "High", "Low", "Close"]].dropna(how="any")
     except Exception:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _get_market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
+    """alpha/beta 需 Close 再 pct_change；優先 TW 指數，不行用 GSPC。"""
+    for idx in ["^TWII", "^TAIEX", "^GSPC"]:
+        try:
+            h = yf.Ticker(idx).history(start=start, end=end)
+            if h is not None and not h.empty and "Close" in h:
+                s = h["Close"].copy()
+                s.name = idx
+                return s
+        except Exception:
+            continue
+    return None
+
 def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> Tuple[pd.DataFrame, str]:
-    """
-    回傳 60m/日/週/月底表資料與標題附註。
-    """
+    """回傳 60m/日/週/月 dataframe 與標題附註。"""
     if tf_label == "60m":
         df = _download_ohlc_intraday(ticker, "60m", "60d")
         note = "（60 分鐘）"
@@ -80,14 +103,24 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         return
 
     try:
-        ticker, name = find_ticker_by_name(keyword)
+        ticker = find_ticker_by_name(keyword)  # 只回代碼
+        name = TICKER_NAME_MAP.get(ticker, "")
         st.session_state["last_stock_kw"] = keyword
 
-        stats = get_metrics(ticker)
+        # ---- 準備 get_metrics 需要的參數 ----
+        end = pd.Timestamp.today().normalize()
+        start = end - pd.Timedelta(days=365)
+        market_close = _get_market_close_series(start, end)
+        if market_close is None:
+            raise RuntimeError("抓不到市場指數收盤價（^TWII/^TAIEX/^GSPC）")
+        rf = 0.01
 
+        stats = get_metrics(ticker, market_close, rf, start, end, is_etf=False)
+
+        # ======= KPI 區 =======
         with st.container(border=True):
             st.subheader(f"{name or ticker}（{ticker}）")
-            if is_etf(ticker):
+            if _is_etf_func(ticker):
                 st.warning("這看起來像是 ETF，建議改到「ETF」分頁查詢。")
 
             sharpe_grade = grade_sharpe(stats.get("Sharpe Ratio"))
@@ -108,6 +141,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
                 f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
             )
 
+        # ======= K 線 =======
         base_df: pd.DataFrame = stats["df"].copy()
         if not isinstance(base_df.index, pd.DatetimeIndex):
             base_df.index = pd.to_datetime(base_df.index)
@@ -123,6 +157,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         madr = stats.get("MADR")
         st.caption(f"MADR：{madr:.4f}" if madr is not None and pd.notna(madr) else "MADR：—")
 
+        # ======= 加入觀察 =======
         with st.container():
             right = st.columns([1, 1, 1, 1, 1, 1, 1])[-1]
             with right:
@@ -135,5 +170,4 @@ def render(prefill_symbol: Optional[str] = None) -> None:
 
 # 與 app.py 相容的入口
 def show(prefill_symbol: Optional[str] = None) -> None:
-    # 為相容舊版 app.py：外部仍可呼叫 show()
     render(prefill_symbol=prefill_symbol)
