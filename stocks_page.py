@@ -1,6 +1,6 @@
-# =========================================
-# stocks_page.py  (覆蓋；邏輯不變，只沿用新圖表)
-# =========================================
+# ================================
+# /mnt/data/stocks_page.py  (僅修 _download_ohlc_60m；其它維持)
+# ================================
 from __future__ import annotations
 import math
 from typing import Optional, Tuple
@@ -26,9 +26,16 @@ def _normalize_tw_ticker(sym: str) -> str:
     return s if s.endswith((".TW",".TWO")) or s.startswith("^") else f"{s}.TW"
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _download_ohlc_60m(ticker: str, period: str="90d") -> pd.DataFrame:
+def _download_ohlc_60m(ticker: str, period: str="60d") -> pd.DataFrame:
+    """yfinance 60m 會是 UTC；轉成台北時間再清洗，避免被 rangebreaks 全部隱藏。"""
     try:
         df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
+        if isinstance(df.index, pd.DatetimeIndex):
+            if df.index.tz is not None:
+                df = df.tz_convert("Asia/Taipei")  # why: 對齊 09:00~14:00 的 rangebreaks
+            else:
+                # 部分環境 60m 可能回 tz-naive 但事實上是 UTC
+                df.index = df.index.tz_localize("UTC").tz_convert("Asia/Taipei")
         return _ensure_ohlc(df)
     except Exception:
         return pd.DataFrame(columns=["Open","High","Low","Close"])
@@ -45,7 +52,7 @@ def _market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.
     return None
 
 def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.DataFrame, str]:
-    if tf == "60m": return _download_ohlc_60m(ticker, "90d"), "（60 分鐘）"
+    if tf == "60m": return _download_ohlc_60m(ticker, "60d"), "（60 分鐘）"
     return daily_df.copy(), "（日 K）"
 
 def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
