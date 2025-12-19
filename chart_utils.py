@@ -122,7 +122,8 @@ def plot_candlestick_with_indicators(
 
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-        row_heights=[0.54, 0.16, 0.30],  # MACD 子圖較高
+        # 讓 MACD 區更高，比例更接近你右圖
+        row_heights=[0.52, 0.14, 0.34],
         specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
@@ -168,7 +169,7 @@ def plot_candlestick_with_indicators(
     fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["MACD"],   name="MACD",   mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["SIGNAL"], name="Signal", mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
 
-    # KDJ-J：以 0–1 軸繪圖，但刻度顯示 0–100
+    # KDJ-J：以 0–1 軸繪圖，但刻度顯示 0–100（單位不變）
     fig.add_trace(
         go.Scatter(
             x=kdj_j.index, y=kdj_j / 100.0, name="KDJ-J",
@@ -185,22 +186,31 @@ def plot_candlestick_with_indicators(
         hovermode="x unified",
         legend=dict(orientation="h", x=0, xanchor="left", y=-0.15, yanchor="top"),
         margin=dict(l=8, r=8, t=48, b=72),
-        bargap=0.1,
+        bargap=0.05,                                # 柱距變小 → 視覺更飽滿
     )
 
     # === 軸設定 ===
-    # 主圖 Y 軸：不固定（允許滾輪同時縮放 X+Y → 等比放大）
+    # 主圖 Y 軸：不固定（等比放大）
     fig.update_yaxes(row=1, col=1, fixedrange=False, showspikes=True, spikemode="across", spikesnap="cursor",
                      showline=True, ticks="outside")
 
-    # RSI/MACD：固定 Y，避免誤縮放
+    # RSI：固定 Y
     fig.update_yaxes(title_text="RSI", range=[0, 100], fixedrange=True, row=2, col=1)
-    fig.update_yaxes(title_text="MACD", zeroline=True, fixedrange=True, row=3, col=1, secondary_y=False)
 
-    # 右側（KDJ）軸：0–1，但刻度顯示 0–100
+    # MACD：依資料動態設範圍（柱子約佔 80% 高度，比例接近右圖）
+    hist = macd_h["HIST"].dropna()
+    if not hist.empty:
+        hmax = float(np.nanmax(np.abs(hist.values)))
+        pad = 0.4 * hmax  # 留白比例
+        macd_min, macd_max = -(hmax + pad), (hmax + pad)
+        fig.update_yaxes(title_text="MACD", range=[macd_min, macd_max], fixedrange=True, row=3, col=1, secondary_y=False)
+    else:
+        fig.update_yaxes(title_text="MACD", zeroline=True, fixedrange=True, row=3, col=1, secondary_y=False)
+
+    # 右側（KDJ）軸：0–1，但刻度顯示 0–100；範圍收窄更聚焦
     tickvals = np.linspace(0, 1, 6)
     ticktext = [f"{int(v*100)}" for v in tickvals]
-    fig.update_yaxes(title_text="KDJ-J", range=[-0.2, 1.2], fixedrange=True,
+    fig.update_yaxes(title_text="KDJ-J", range=[-0.05, 1.05], fixedrange=True,
                      tickvals=tickvals.tolist(), ticktext=ticktext,
                      row=3, col=1, secondary_y=True)
 
