@@ -1,9 +1,8 @@
 # =========================================
 # /mnt/data/stocks_page.py
-# 修復 tz-naive 錯誤；60m/日K；日期線貫穿；移除休市日；少一天自動回補
+# 60m/日K；日期線貫穿；不顯示休市日；少一天自動回補；修正 tz-naive 錯誤；只允許個股
 # =========================================
 from __future__ import annotations
-
 import math
 from typing import Optional, Tuple
 
@@ -19,6 +18,7 @@ from risk_grading import (
     grade_debt_equity, grade_current_ratio, grade_roe, summarize,
 )
 
+# ---------- helpers ----------
 def _fmt2(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
 def _fmt2pct(x: Optional[float]) -> str:
@@ -57,7 +57,7 @@ def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.Dat
     return daily_df.copy(), "（日 K）"
 
 def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
-    """缺最近交易日時，使用 7d 日線補尾端（索引去重）"""
+    """缺最近交易日時，用 7d 日線補尾端（索引去重）"""
     try:
         tail = yf.Ticker(_normalize_tw_ticker(ticker)).history(period="7d", interval="1d", auto_adjust=False)
         if tail is None or tail.empty:
@@ -70,10 +70,10 @@ def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
         return df
 
 def _tpe_time_range(days: int = 366) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """回傳 tz-naive 的 (start, end)。先在 TPE 時區計算，再一次轉換去時區。"""
+    """回傳 tz-naive 的 (start, end)。避免 tz-naive 轉換錯誤。"""
     tz = pytz.timezone("Asia/Taipei")
     now_tpe = pd.Timestamp.now(tz=tz)
-    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)  # 右開區間緩衝
+    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)  # yfinance 右開區間緩衝
     start_aware = end_aware - pd.Timedelta(days=days)
     return start_aware.tz_convert(None), end_aware.tz_convert(None)
 
@@ -83,13 +83,11 @@ def _kpi_grid(items: list[tuple[str, str, str]], cols: int = 5) -> None:
     for _ in range((len(items) + cols - 1) // cols):
         cs = st.columns(cols)
         for c in cs:
-            try:
-                name, val, hp = next(it)
-            except StopIteration:
-                break
-            with c:
-                st.metric(label=name, value=val, help=hp or None)
+            try: n, v, h = next(it)
+            except StopIteration: break
+            with c: st.metric(label=n, value=v, help=h or None)
 
+# ---------- page ----------
 def render(prefill_symbol: Optional[str] = None) -> None:
     st.header("股票")
     c1, c2 = st.columns([3, 2])
