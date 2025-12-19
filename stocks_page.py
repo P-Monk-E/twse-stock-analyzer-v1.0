@@ -12,7 +12,7 @@ import streamlit as st
 import yfinance as yf
 
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
-from chart_utils import plot_candlestick_with_ma
+from chart_utils import plot_candlestick_with_ma, PLOTLY_TV_CONFIG
 from risk_grading import (
     grade_alpha,
     grade_sharpe,
