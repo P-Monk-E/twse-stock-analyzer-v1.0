@@ -3,7 +3,7 @@
 # 主圖：K + MA5/10/20 + 布林(BB20,±2)
 # 中圖：RSI(14)
 # 下圖：MACD 柱體(12,26,9) + KDJ J(9,3,3)
-# 改進：統一日期線、移除休市日/假日、60m 移除夜間
+# 互動：滾輪縮放、統一日期線、保留縮放；自動移除休市日/週末/夜間(60m)
 # =========================================
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ PLOTLY_TV_CONFIG = {
     "toImageButtonOptions": {"format": "png"},
 }
 
-# ---------- 指標 ----------
+# ----- indicators -----
 def _ma(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["MA5"] = out["Close"].rolling(5).mean()
@@ -63,24 +63,22 @@ def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     rsi.name = "RSI"
     return rsi
 
-# ---------- 休市日/夜間移除 ----------
+# ----- breaks: remove non-trading days and night hours -----
 def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]:
     if not isinstance(idx, pd.DatetimeIndex) or idx.empty:
         return []
-    breaks = [dict(bounds=["sat", "mon"])]  # 週末
-    # 假日（工作日上卻沒有資料的日期）
+    breaks = [dict(bounds=["sat", "mon"])]
     all_days = pd.date_range(idx.min().normalize(), idx.max().normalize(), freq="D")
     trade_days = pd.DatetimeIndex(pd.to_datetime(idx.date)).unique()
     non_trade = all_days.difference(trade_days)
     weekday_non_trade = non_trade[non_trade.weekday < 5]
     if len(weekday_non_trade) > 0:
         breaks.append(dict(values=weekday_non_trade))
-    # 60m：移除夜間（09:00~13:30 以 09~14 小時近似）
     if is_intraday:
-        breaks.append(dict(pattern="hour", bounds=[14, 9]))
+        breaks.append(dict(pattern="hour", bounds=[14, 9]))  # 14:00~09:00 不顯示
     return breaks
 
-# ---------- 主圖 ----------
+# ----- main chart -----
 def plot_candlestick_with_indicators(
     df: pd.DataFrame,
     title: str = "",
@@ -94,18 +92,16 @@ def plot_candlestick_with_indicators(
     if not isinstance(data.index, pd.DatetimeIndex):
         data.index = pd.to_datetime(data.index)
 
-    # 判斷是否為 60m 內頻
     is_intraday = False
     if len(data) > 2:
         step = data.index.to_series().diff().dt.total_seconds().median()
-        is_intraday = pd.notna(step) and step <= 3600 + 60
+        is_intraday = pd.notna(step) and step <= 3660
 
     data = _ma(data)
     bb = _bb(data)
     macd_h = _macd_hist(data["Close"])
     kdj_j = _kdj_j(data)
     rsi = _rsi(data["Close"])
-
     breaks = _compute_rangebreaks(data.index, is_intraday=is_intraday)
 
     fig = make_subplots(
@@ -117,7 +113,7 @@ def plot_candlestick_with_indicators(
         specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
-    # Row1
+    # Row1: price + MA + BB
     fig.add_trace(go.Candlestick(
         x=data.index, open=data["Open"], high=data["High"], low=data["Low"], close=data["Close"],
         name="Price", increasing_line_width=1, decreasing_line_width=1
@@ -129,23 +125,22 @@ def plot_candlestick_with_indicators(
     fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_UPPER"], name="+2σ", line=dict(dash="dot")), row=1, col=1)
     fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_LOWER"], name="-2σ", line=dict(dash="dot")), row=1, col=1)
 
-    # Row2：RSI
+    # Row2: RSI
     fig.add_trace(go.Scatter(x=rsi.index, y=rsi, name="RSI(14)"), row=2, col=1)
     fig.add_hline(y=70, line_dash="dot", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", row=2, col=1)
 
-    # Row3：MACD Hist + KDJ J
+    # Row3: MACD hist + KDJ J
     fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.75),
                   row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=kdj_j.index, y=kdj_j, name="KDJ J", mode="lines"),
                   row=3, col=1, secondary_y=True)
 
-    # 互動：統一日期線；移除休市日
     fig.update_layout(
         title=title,
         height=height,
         dragmode="pan",
-        hovermode="x unified",   # 日期線穿透三圖
+        hovermode="x unified",   # 日期線貫穿所有子圖
         uirevision=uirevision_key,
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
