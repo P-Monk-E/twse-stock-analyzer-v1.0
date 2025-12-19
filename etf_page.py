@@ -1,3 +1,6 @@
+# =========================================
+# /mnt/data/etf_page.py  （同步引用新版圖表，無邏輯變更）
+# =========================================
 from __future__ import annotations
 from typing import Optional, Tuple
 
@@ -42,8 +45,8 @@ def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
     try:
         tail = yf.Ticker(_normalize_tw_ticker(ticker)).history(period="7d", interval="1d", auto_adjust=False)
         tail = _ensure_ohlc(tail)
-        out = pd.concat([_ensure_ohlc(df), tail])
-        out = out[~out.index.duplicated(keep="last")].sort_index()
+        out  = pd.concat([_ensure_ohlc(df), tail])
+        out  = out[~out.index.duplicated(keep="last")].sort_index()
         return out
     except Exception:
         return _ensure_ohlc(df)
@@ -51,7 +54,7 @@ def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
 def _tpe_time_range(days: int=366) -> tuple[pd.Timestamp, pd.Timestamp]:
     tz = pytz.timezone("Asia/Taipei")
     now_tpe = pd.Timestamp.now(tz=tz)
-    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)
+    end_aware   = now_tpe.normalize() + pd.Timedelta(days=2)
     start_aware = end_aware - pd.Timedelta(days=days)
     return start_aware.tz_convert(None), end_aware.tz_convert(None)
 
@@ -79,7 +82,7 @@ def render(prefill_symbol: Optional[str]=None) -> None:
 
     try:
         ticker = find_ticker_by_name(keyword)
-        name = TICKER_NAME_MAP.get(ticker, "")
+        name   = TICKER_NAME_MAP.get(ticker, "")
         st.session_state["last_etf_kw"] = keyword
 
         if not is_etf(ticker):
@@ -99,20 +102,15 @@ def render(prefill_symbol: Optional[str]=None) -> None:
 
         with st.container(border=True):
             st.subheader(f"{name or ticker}（{ticker}）")
-            div_warn = diversification_warning(ticker)
-            if div_warn: st.warning(div_warn)
-            grades = {"Sharpe": grade_sharpe(stats.get("Sharpe Ratio")), "Treynor": grade_treynor(stats.get("Treynor")), "Alpha": grade_alpha(stats.get("Alpha"))}
-            crit, warn, good = summarize(grades)
+            warn = diversification_warning(ticker)
+            if warn: st.warning(warn)
+            grades = {"Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
+                      "Treynor": grade_treynor(stats.get("Treynor")),
+                      "Alpha":  grade_alpha(stats.get("Alpha"))}
+            crit, w, good = summarize(grades)
             if crit: st.error("關鍵風險：" + "、".join(crit))
-            if warn: st.warning("注意項：" + "、".join(warn))
+            if w:    st.warning("注意項：" + "、".join(w))
             if good: st.success("達標：" + "、".join(good))
-
-            _kpi_grid([
-                ("Alpha", f"{stats.get('Alpha', float('nan')):.2f}", ""),
-                ("Beta", f"{stats.get('Beta', float('nan')):.2f}", ""),
-                ("Sharpe", f"{stats.get('Sharpe Ratio', float('nan')):.2f}", ""),
-                ("Treynor", f"{stats.get('Treynor', float('nan')):.2f}", ""),
-            ], cols=4)
 
         tf_df, tf_note = _prepare_tf_df(ticker, base_df, tf)
         if tf_df.empty: st.error("查無對應週期的價格資料。"); return
