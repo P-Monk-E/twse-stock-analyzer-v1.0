@@ -93,6 +93,10 @@ def show(prefill_symbol: Optional[str] = None) -> None:
 
         name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
 
+        # 取值（容錯不同鍵名）
+        eps = stats.get("EPS(TTM)", stats.get("EPS_TTM"))
+        equity = stats.get("股東權益", stats.get("Equity"))
+
         # 標題 + 右上角加入觀察
         c1, c2 = st.columns([1, 0.15])
         with c1:
@@ -101,7 +105,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
             if st.button("＋ 加入觀察", key="btn_watch_stock"):
                 add_to_watchlist("stock", ticker, name or ticker)
 
-        # ======= KPI 第 1 排（股票不含 Treynor；EPS(TTM) 移到最右邊）=======
+        # ======= KPI 第 1 排（EPS 放最右邊）=======
         k1, k2, k3, k4 = st.columns(4)
         with k1:
             st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
@@ -113,7 +117,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
             st.metric("Beta", _fmt2(stats.get("Beta")))
             st.caption("相對市場波動")
         with k4:
-            st.metric("EPS (TTM)", _fmt2(stats.get("EPS_TTM")))
+            st.metric("EPS (TTM)", _fmt2(eps))
             st.caption("近四季盈餘/股")
 
         # ======= 風險摘要（不含 Treynor）=======
@@ -132,7 +136,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         else:
             st.success("✅ 指標狀態良好。")
 
-        # ======= 財務列（EPS 已移走；股東權益 → 百萬顯示）=======
+        # ======= 財務列（股東權益以百萬顯示；EPS 已移至上排）=======
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.metric("負債權益比", _fmt2(stats.get("負債權益比")))
@@ -141,7 +145,7 @@ def show(prefill_symbol: Optional[str] = None) -> None:
         with c3:
             st.metric("ROE", _fmt2pct(stats.get("ROE")))
         with c4:
-            st.metric("股東權益", _fmt_millions(stats.get("Equity")))
+            st.metric("股東權益", _fmt_millions(equity))
 
         # ======= 圖（含 RSI、MACD/KDJ；線條皆連續實線）=======
         fig = plot_candlestick_with_indicators(
