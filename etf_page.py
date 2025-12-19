@@ -1,7 +1,6 @@
 # =========================================
 # /mnt/data/etf_page.py
-# 60m/日K；補到最新交易日（台北時區 +2 天）+ 7d 回補；不顯示休市日；三圖共用日期線
-# 嚴格分流：只允許 ETF
+# 修復 tz-naive 錯誤；60m/日K；日期線貫穿；移除休市日；少一天自動回補；只允許 ETF
 # =========================================
 from __future__ import annotations
 
@@ -59,6 +58,13 @@ def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         return df
 
+def _tpe_time_range(days: int = 366) -> tuple[pd.Timestamp, pd.Timestamp]:
+    tz = pytz.timezone("Asia/Taipei")
+    now_tpe = pd.Timestamp.now(tz=tz)
+    end_aware = now_tpe.normalize() + pd.Timedelta(days=2)
+    start_aware = end_aware - pd.Timedelta(days=days)
+    return start_aware.tz_convert(None), end_aware.tz_convert(None)
+
 def _kpi_grid(items: list[tuple[str, str, str]], cols: int = 4) -> None:
     if not items: return
     it = iter(items)
@@ -89,10 +95,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         if not is_etf(ticker):
             st.warning("這不是 ETF，請改至「股票」分頁查詢。"); return
 
-        tz = pytz.timezone("Asia/Taipei")
-        now_tpe = pd.Timestamp.now(tz=tz)
-        end = (now_tpe.normalize() + pd.Timedelta(days=2)).tz_convert(None)
-        start = (end - pd.Timedelta(days=366)).tz_convert(None)
+        start, end = _tpe_time_range(366)
 
         market_close = _market_close_series(start, end)
         if market_close is None:
