@@ -105,7 +105,10 @@ def plot_candlestick_with_indicators(
     3-row plot:
       1) Candlestick + MA(5/10/20) + Bollinger(20,2σ)
       2) RSI(14) + 70/30 lines
-      3) MACD(12,26,9) hist + line + KDJ-J (secondary y; J 線以 ×0.01 顯示)
+      3) MACD(12,26,9) hist + line + KDJ-J (secondary y)
+    - 滑鼠：左鍵平移、滾輪水平放大
+    - 休市日隱藏（無縫）
+    - KDJ 的顯示：軸使用 0–1，但刻度顯示 0–100（單位維持）
     """
     data = _ensure_ohlc(df)
     if data.empty:
@@ -119,7 +122,7 @@ def plot_candlestick_with_indicators(
 
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-        row_heights=[0.54, 0.16, 0.30],
+        row_heights=[0.54, 0.16, 0.30],  # MACD 子圖較高
         specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
@@ -165,10 +168,10 @@ def plot_candlestick_with_indicators(
     fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["MACD"],   name="MACD",   mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["SIGNAL"], name="Signal", mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
 
-    # KDJ-J：僅視覺縮放（100 -> 1）
+    # KDJ-J：以 0–1 軸繪圖，但刻度顯示 0–100（數字單位保持）
     fig.add_trace(
         go.Scatter(
-            x=kdj_j.index, y=kdj_j / 100.0, name="KDJ-J (×0.01)",
+            x=kdj_j.index, y=kdj_j / 100.0, name="KDJ-J",
             mode="lines", connectgaps=True, line=dict(width=2, dash="solid")),
         row=3, col=1, secondary_y=True,
     )
@@ -178,17 +181,27 @@ def plot_candlestick_with_indicators(
         title=title or "",
         xaxis_rangeslider_visible=False,
         uirevision=uirevision_key,
-        dragmode="pan",                                 # 只允許平移（左鍵）
+        dragmode="pan",                                 # 左鍵平移
         hovermode="x unified",
         legend=dict(orientation="h", x=0, xanchor="left", y=-0.15, yanchor="top"),
-        margin=dict(l=8, r=8, t=48, b=72),             # b 加大讓底部圖例不重疊
+        margin=dict(l=8, r=8, t=48, b=72),             # 底部留空給圖例
+        bargap=0.1,                                    # MACD 柱狀更飽滿
     )
 
-    # y 軸固定範圍 → 滾輪只縮放 X；避免任何框選縮放
+    # y 軸固定範圍 → 滾輪只縮放 X；避免垂直縮放造成誤觸
     fig.update_yaxes(fixedrange=True, row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], fixedrange=True, row=2, col=1)
     fig.update_yaxes(title_text="MACD", zeroline=True, fixedrange=True, row=3, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="KDJ-J", range=[-0.2, 1.2], fixedrange=True, row=3, col=1, secondary_y=True)
+
+    # 右側（KDJ）軸：0–1，但刻度顯示 0–100
+    tickvals = np.linspace(0, 1, 6)  # 0,0.2,...,1
+    ticktext = [f"{int(v*100)}" for v in tickvals]
+    fig.update_yaxes(
+        title_text="KDJ-J",
+        range=[-0.2, 1.2], fixedrange=True,
+        tickvals=tickvals.tolist(), ticktext=ticktext,
+        row=3, col=1, secondary_y=True,
+    )
 
     # 網格
     fig.update_xaxes(showgrid=False)
