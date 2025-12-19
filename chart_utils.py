@@ -1,5 +1,5 @@
 # =========================================
-# /mnt/data/chart_utils.py
+# chart_utils.py  (覆蓋)
 # =========================================
 from __future__ import annotations
 from typing import Optional
@@ -15,7 +15,7 @@ PLOTLY_TV_CONFIG = {
     "toImageButtonOptions": {"format": "png"},
 }
 
-# ---------- robust OHLC standardizer ----------
+# ---------- 清洗成標準 OHLC ----------
 def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
@@ -81,7 +81,7 @@ def _rsi(close: pd.Series, n=14) -> pd.Series:
     rs = roll_up / roll_down.replace(0, np.nan)
     return (100 - 100/(1+rs)).rename("RSI")
 
-# ---------- 休市日/夜間移除 ----------
+# ---------- 休市/夜間隱藏 ----------
 def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]:
     if not isinstance(idx, pd.DatetimeIndex) or idx.empty:
         return []
@@ -125,18 +125,16 @@ def plot_candlestick_with_indicators(
         row_heights=[0.56, 0.18, 0.26], specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
-    # Row 1: K + MA + BB（連續實線；BB 半透明實線）
+    # Row1: K + MA + BB（連續實線；BB 半透明）
     fig.add_trace(go.Candlestick(
         x=data.index, open=data["Open"], high=data["High"], low=data["Low"], close=data["Close"],
         name="Price", increasing_line_width=1, decreasing_line_width=1
     ), row=1, col=1)
-
     for name in ["MA5", "MA10", "MA20"]:
         fig.add_trace(go.Scatter(
             x=data.index, y=data[name], name=name,
             mode="lines", connectgaps=True, line=dict(width=2)
         ), row=1, col=1)
-
     fig.add_trace(go.Scatter(
         x=bb.index, y=bb["BB_MID"], name="BB20",
         mode="lines", connectgaps=True, line=dict(width=1.6), opacity=0.55
@@ -150,15 +148,15 @@ def plot_candlestick_with_indicators(
         mode="lines", connectgaps=True, line=dict(width=1.6), opacity=0.35
     ), row=1, col=1)
 
-    # Row 2: RSI（連續實線）
+    # Row2: RSI（連續實線）
     fig.add_trace(go.Scatter(
         x=rsi.index, y=rsi, name="RSI(14)",
         mode="lines", connectgaps=True, line=dict(width=2)
     ), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dot", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dot", row=2, col=1)
+    fig.add_hline(y=80, line_dash="dot", row=2, col=1)
+    fig.add_hline(y=20, line_dash="dot", row=2, col=1)
 
-    # Row 3: MACD 柱體 + KDJ J（J 連續實線）
+    # Row3: MACD 柱體 + KDJ-J（連續實線）
     fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.85),
                   row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(
@@ -166,31 +164,31 @@ def plot_candlestick_with_indicators(
         mode="lines", connectgaps=True, line=dict(width=2.2)
     ), row=3, col=1, secondary_y=True)
 
-    # ---- 互動（重點：日期線跨三圖，並顯示日期） ----
+    # ---- 互動（跨三圖日期線 + 日期格式）----
     fig.update_layout(
         title=title, height=height, dragmode="pan",
-        hovermode="x unified",  # 統一 hover 盒，會顯示日期
+        hovermode="x unified",                 # 垂直日期線跨三圖
         hoverlabel=dict(namelength=-1),
         uirevision=uirevision_key,
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        spikedistance=-1,  # 鼠標附近即顯示 spike
-        hoverdistance=0,
+        spikedistance=-1,                      # 滑鼠靠近就顯示 spike
+        hoverdistance=100,                     # 容易觸發 unified hover
         xaxis =dict(type="date", rangebreaks=breaks, rangeslider=dict(visible=False), showline=True, ticks="outside"),
         xaxis2=dict(type="date", rangebreaks=breaks, showline=True, ticks="outside"),
         xaxis3=dict(type="date", rangebreaks=breaks, showline=True, ticks="outside"),
     )
 
-    # 三個 x 軸都開 spike，且跨子圖顯示；加 hoverformat 讓日期格式清楚
+    # 三個 x 軸：顯示 spike，並設定日期 hover 格式（YYYY/MM/DD）
     for ax in ("xaxis", "xaxis2", "xaxis3"):
         fig.layout[ax].update(
             showspikes=True,
-            spikemode="across+toaxis+marker",  # why: 一次貫穿三圖，也在對應軸顯示
+            spikemode="across+toaxis+marker",
             spikesnap="cursor",
             spikethickness=1.5,
             spikedash="dot",
             spikecolor="black",
-            hoverformat="%Y-%m-%d",  # 統一 hover 盒日期格式
+            hoverformat="%Y/%m/%d",
         )
 
     # Y 軸與格線
