@@ -1,7 +1,7 @@
 # =========================================
 # /mnt/data/etf_page.py
-# 修正：get_metrics 參數 + find_ticker_by_name 只回傳代碼
-# 功能：60m/日/週/月 K 線、滑輪縮放、十字線、show() 相容 app.py
+# 修正：risk_grading.summarize 需傳 dict；完整改為分級摘要顯示
+# 仍保留：60m/日/週/月 K、滑輪縮放、十字線、show() 相容 app.py
 # =========================================
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         name = TICKER_NAME_MAP.get(ticker, "")
         st.session_state["last_etf_kw"] = keyword
 
-        # ---- 準備 get_metrics 需要的參數 ----
+        # ---- get_metrics 需要的參數 ----
         end = pd.Timestamp.today().normalize()
         start = end - pd.Timedelta(days=365)
         market_close = _get_market_close_series(start, end)
@@ -90,23 +90,22 @@ def render(prefill_symbol: Optional[str] = None) -> None:
 
         st.subheader(f"{name or ticker}（{ticker}）")
 
-        sharpe = stats.get("Sharpe Ratio")
-        treynor = stats.get("Treynor")
-        alpha = stats.get("Alpha")
-        st.write(summarize(
-            grade_alpha(alpha),
-            grade_sharpe(sharpe),
-            grade_treynor(treynor),
-        ))
+        # 依新規格：先做 dict，再 summarize(dict)
+        grades = {
+            "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
+            "Treynor": grade_treynor(stats.get("Treynor")),
+            "Alpha": grade_alpha(stats.get("Alpha")),
+        }
+        crit, warn, good = summarize(grades)
 
-        msg = diversification_warning(
-            sharpe, treynor,
-            non_sys_thr=float(st.session_state.get("non_sys_thr", 0.5)),
-            sys_thr=float(st.session_state.get("sys_thr", 0.5)),
-        )
-        if msg:
-            st.warning(msg)
+        if crit:
+            st.error("關鍵風險：" + "、".join(crit))
+        if warn:
+            st.warning("注意項：" + "、".join(warn))
+        if good:
+            st.success("達標：" + "、".join(good))
 
+        # ======= K 線 =======
         base_df: pd.DataFrame = stats["df"].copy()
         if not isinstance(base_df.index, pd.DatetimeIndex):
             base_df.index = pd.to_datetime(base_df.index)
@@ -122,6 +121,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         madr = stats.get("MADR")
         st.caption(f"MADR：{madr:.4f}" if madr is not None and pd.notna(madr) else "MADR：—")
 
+        # ======= 加入觀察 =======
         right = st.columns([1, 1, 1, 1, 1, 1, 1])[-1]
         with right:
             if st.button("＋加入觀察", use_container_width=True):
