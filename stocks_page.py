@@ -1,5 +1,5 @@
 # =========================================
-# /mnt/data/stocks_page.py
+# stocks_page.py  (覆蓋；邏輯不變，只沿用新圖表)
 # =========================================
 from __future__ import annotations
 import math
@@ -17,52 +17,19 @@ from risk_grading import (
     grade_debt_equity, grade_current_ratio, grade_roe, summarize,
 )
 
-def _fmt2(x: Optional[float]) -> str:  return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
+def _fmt2(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
 def _fmt2pct(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x*100:.2f}%"
-def _fmt0(x: Optional[float]) -> str:  return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
+def _fmt0(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
 
 def _normalize_tw_ticker(sym: str) -> str:
     s = str(sym).upper().strip()
     return s if s.endswith((".TW",".TWO")) or s.startswith("^") else f"{s}.TW"
 
-def _to_tpe_naive(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    if idx.tz is None: idx = idx.tz_localize("UTC")
-    return idx.tz_convert("Asia/Taipei").tz_localize(None)
-
-def _resample_to_60m(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty or not isinstance(df.index, pd.DatetimeIndex): return pd.DataFrame(columns=["Open","High","Low","Close"])
-    out = df.resample("60min", label="right", closed="right").agg({"Open":"first","High":"max","Low":"min","Close":"last"})
-    return out.dropna(how="any")
-
-def _sanitize_intraday(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty: return df
-    x = df.copy()
-    x = x.between_time("09:00","13:59")  # why: 只留交易時段
-    x = x[~x.index.duplicated(keep="last")].sort_index()
-    return x
-
 @st.cache_data(ttl=1800, show_spinner=False)
-def _download_ohlc_60m(ticker: str, period: str="60d") -> pd.DataFrame:
-    def _clean(df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty: return pd.DataFrame()
-        if isinstance(df.index, pd.DatetimeIndex):
-            df = df.copy(); df.index = _to_tpe_naive(df.index)
-        df = _ensure_ohlc(df)
-        return _sanitize_intraday(df)
-
+def _download_ohlc_60m(ticker: str, period: str="90d") -> pd.DataFrame:
     try:
-        t = yf.Ticker(_normalize_tw_ticker(ticker))
-
-        df = _clean(t.history(period=period, interval="60m", auto_adjust=False))
-        if not df.empty: return df
-
-        df30 = _clean(t.history(period=period, interval="30m", auto_adjust=False))
-        if not df30.empty: return _resample_to_60m(df30)
-
-        df15 = _clean(t.history(period=period, interval="15m", auto_adjust=False))
-        if not df15.empty: return _resample_to_60m(df15)
-
-        return pd.DataFrame(columns=["Open","High","Low","Close"])
+        df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
+        return _ensure_ohlc(df)
     except Exception:
         return pd.DataFrame(columns=["Open","High","Low","Close"])
 
@@ -78,7 +45,7 @@ def _market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.
     return None
 
 def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.DataFrame, str]:
-    if tf == "60m": return _download_ohlc_60m(ticker, "60d"), "（60 分鐘）"
+    if tf == "60m": return _download_ohlc_60m(ticker, "90d"), "（60 分鐘）"
     return daily_df.copy(), "（日 K）"
 
 def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
@@ -142,24 +109,9 @@ def render(prefill_symbol: Optional[str]=None) -> None:
 
         with st.container(border=True):
             st.subheader(f"{name or ticker}（{ticker}）")
-
-            # KPI 數字（股票不顯示 Treynor）
-            _kpi_grid(
-                [
-                    ("Sharpe", _fmt2(stats.get("Sharpe Ratio")), "報酬/波動"),
-                    ("Alpha",  _fmt2(stats.get("Alpha")), "風險調整超額"),
-                    ("負債權益比", _fmt2(stats.get("負債權益比")), ""),
-                    ("流動比率",   _fmt2(stats.get("流動比率")), ""),
-                    ("ROE",     _fmt2pct(stats.get("ROE")), ""),
-                    ("股東權益", _fmt0(stats.get("股東權益")), ""),
-                    ("EPS(TTM)", _fmt2(stats.get("EPS(TTM)")), ""),
-                ],
-                cols=7,
-            )
-
             grades = {
                 "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
-                "Treynor": grade_treynor(None),  # why: 股票不評 Treynor，給 None 即不加權
+                "Treynor": grade_treynor(stats.get("Treynor")),
                 "Alpha":  grade_alpha(stats.get("Alpha")),
                 "負債權益比": grade_debt_equity(stats.get("負債權益比")),
                 "流動比率":   grade_current_ratio(stats.get("流動比率")),
