@@ -8,11 +8,20 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 只保留 Streamlit 的全螢幕（隱藏 Plotly modebar）
+# 只保留「全螢幕」按鈕
 PLOTLY_TV_CONFIG = {
-    "displayModeBar": False,            # 關閉 Plotly 工具列（避免與圖例重疊；保留 Streamlit 全螢幕）
     "displaylogo": False,
     "scrollZoom": True,
+    "modeBarButtonsToAdd": ["toggleFullscreen"],
+    "modeBarButtonsToRemove": [
+        # 常見 2D 操作
+        "zoom2d", "pan2d", "select2d", "lasso2d",
+        "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d",
+        # 比較/最近點、標線
+        "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
+        # 其他
+        "toImage"
+    ],
     "toImageButtonOptions": {"format": "png"},
 }
 
@@ -166,13 +175,13 @@ def plot_candlestick_with_indicators(
         row=3, col=1, secondary_y=True,
     )
 
-    # 版面（圖例置上方，不與右上工具列重疊）
+    # 版面（圖例置上方靠左，避免與右上 modebar 重疊）
     fig.update_layout(
         title=title or "",
         xaxis_rangeslider_visible=False,
         uirevision=uirevision_key,
         legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="left", x=0),
-        margin=dict(l=8, r=8, t=64, b=8),   # t 加大，避免圖例擠壓
+        margin=dict(l=8, r=8, t=64, b=8),
         hovermode="x unified",
     )
 
@@ -181,7 +190,7 @@ def plot_candlestick_with_indicators(
                      showline=True, ticks="outside", row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
     fig.update_yaxes(title_text="MACD", zeroline=True, row=3, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="KDJ-J", range=[-0.2, 1.2], row=3, col=1, secondary_y=True)  # 對應 ×0.01
+    fig.update_yaxes(title_text="KDJ-J", range=[-0.2, 1.2], row=3, col=1, secondary_y=True)
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=1, col=1)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=2, col=1)
