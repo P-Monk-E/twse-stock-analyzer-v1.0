@@ -1,9 +1,9 @@
 # =========================================
-# /mnt/data/etf_page.py  （右上角「＋加入觀察」 + 60m/日/週/月 K 線切換）
+# /mnt/data/etf_page.py
+# 加入 show(prefill_symbol) 與 60m/日/週/月 K 線切換（相容 app.py）
 # =========================================
 from __future__ import annotations
 
-import math
 from typing import Optional, Tuple
 
 import pandas as pd
@@ -12,10 +12,9 @@ import yfinance as yf
 
 from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
 from portfolio_risk_utils import diversification_warning
-from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
+from stock_utils import find_ticker_by_name, get_metrics
 from chart_utils import plot_candlestick_with_ma, resample_ohlc, PLOTLY_TV_CONFIG
 
-# --------- 工具 ---------
 @st.cache_data(ttl=1800, show_spinner=False)
 def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "60d") -> pd.DataFrame:
     try:
@@ -41,12 +40,12 @@ def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> T
         note = "（月 K）"
     return df, note
 
-# --------- 主頁面 ---------
-def render():
+def render(prefill_symbol: Optional[str] = None) -> None:
     st.header("ETF")
     col1, col2 = st.columns([3, 2])
     with col1:
-        keyword = st.text_input("輸入 ETF 代碼或名稱", value=st.session_state.get("last_etf_kw", "0050"))
+        default_kw = prefill_symbol or st.session_state.get("last_etf_kw", "0050")
+        keyword = st.text_input("輸入 ETF 代碼或名稱", value=default_kw)
     with col2:
         tf_label = st.radio("K 線週期", options=["60m", "日", "週", "月"], index=1, horizontal=True)
 
@@ -61,7 +60,6 @@ def render():
         stats = get_metrics(ticker)
         st.subheader(f"{name or ticker}（{ticker}）")
 
-        # 風險摘要與分散建議
         sharpe = stats.get("Sharpe Ratio")
         treynor = stats.get("Treynor")
         alpha = stats.get("Alpha")
@@ -79,7 +77,6 @@ def render():
         if msg:
             st.warning(msg)
 
-        # ======= 圖表（含 60m/日/週/月） =======
         base_df: pd.DataFrame = stats["df"].copy()
         if not isinstance(base_df.index, pd.DatetimeIndex):
             base_df.index = pd.to_datetime(base_df.index)
@@ -95,13 +92,15 @@ def render():
         madr = stats.get("MADR")
         st.caption(f"MADR：{madr:.4f}" if madr is not None and pd.notna(madr) else "MADR：—")
 
-        # ======= 右上角加入觀察 =======
         right = st.columns([1, 1, 1, 1, 1, 1, 1])[-1]
         with right:
             if st.button("＋加入觀察", use_container_width=True):
                 from watchlist_page import add_to_watchlist
                 add_to_watchlist(symbol_or_name=ticker, name=name, kind_kw="etf")
                 st.success("已加入觀察名單")
-
     except Exception as e:
         st.error(f"❌ 查詢 ETF 失敗：{e}")
+
+# 與 app.py 相容的入口
+def show(prefill_symbol: Optional[str] = None) -> None:
+    render(prefill_symbol=prefill_symbol)
