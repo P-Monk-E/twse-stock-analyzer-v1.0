@@ -14,7 +14,7 @@ import yfinance as yf
 from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
 from portfolio_risk_utils import diversification_warning
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
-from chart_utils import plot_candlestick_with_ma
+from chart_utils import plot_candlestick_with_ma, PLOTLY_TV_CONFIG
 from watchlist_page import add_to_watchlist  # 新增
 # 以你現有版本為基礎加上右上角按鈕。 :contentReference[oaicite:2]{index=2}
 
