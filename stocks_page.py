@@ -1,17 +1,17 @@
 # =========================================
-# /mnt/data/stocks_page.py  （右上角「＋加入觀察」 + 60m/日/週/月 K 線切換）
+# /mnt/data/stocks_page.py
+# 加入 show(prefill_symbol) 與 60m/日/週/月 K 線切換（相容 app.py）
 # =========================================
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
+from stock_utils import find_ticker_by_name, get_metrics, is_etf
 from chart_utils import plot_candlestick_with_ma, resample_ohlc, PLOTLY_TV_CONFIG
 from risk_grading import (
     grade_alpha,
@@ -23,7 +23,7 @@ from risk_grading import (
     summarize,
 )
 
-# --------- 小工具 ---------
+# --------- 格式工具 ---------
 def _fmt2(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
 
@@ -49,10 +49,7 @@ def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "6
 
 def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> Tuple[pd.DataFrame, str]:
     """
-    根據選擇回傳 60m/日/週/月 dataframe 與標題附註。
-    - 60m：另外抓取（近 60 天）。
-    - 日：直接用 base_daily_df。
-    - 週/月：以日線重採樣。
+    回傳 60m/日/週/月底表資料與標題附註。
     """
     if tf_label == "60m":
         df = _download_ohlc_intraday(ticker, "60m", "60d")
@@ -69,11 +66,12 @@ def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> T
     return df, note
 
 # --------- 主頁面 ---------
-def render():
+def render(prefill_symbol: Optional[str] = None) -> None:
     st.header("股票")
     col1, col2 = st.columns([3, 2])
     with col1:
-        keyword = st.text_input("輸入股票代碼或名稱", value=st.session_state.get("last_stock_kw", "2330"))
+        default_kw = prefill_symbol or st.session_state.get("last_stock_kw", "2330")
+        keyword = st.text_input("輸入股票代碼或名稱", value=default_kw)
     with col2:
         tf_label = st.radio("K 線週期", options=["60m", "日", "週", "月"], index=1, horizontal=True)
 
@@ -85,14 +83,11 @@ def render():
         ticker, name = find_ticker_by_name(keyword)
         st.session_state["last_stock_kw"] = keyword
 
-        # 拉基本指標與日線資料（get_metrics 內已處理快取）
         stats = get_metrics(ticker)
 
-        # ======= KPI 區 =======
         with st.container(border=True):
             st.subheader(f"{name or ticker}（{ticker}）")
-            is_etf_flag = is_etf(ticker)
-            if is_etf_flag:
+            if is_etf(ticker):
                 st.warning("這看起來像是 ETF，建議改到「ETF」分頁查詢。")
 
             sharpe_grade = grade_sharpe(stats.get("Sharpe Ratio"))
@@ -107,14 +102,12 @@ def render():
             equity = stats.get("Equity")
             eps_ttm = stats.get("EPS_TTM")
             v_roe = stats.get("ROE")
-            line = (
+            st.markdown(
                 f"**ROE**：{_fmt2pct(v_roe)} {_icon(roe_grade)} ｜ "
                 f"**股東權益**：{_fmt0(equity)} ｜ "
                 f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
             )
-            st.markdown(line)
 
-        # ======= 圖表（含 60m/日/週/月） =======
         base_df: pd.DataFrame = stats["df"].copy()
         if not isinstance(base_df.index, pd.DatetimeIndex):
             base_df.index = pd.to_datetime(base_df.index)
@@ -130,7 +123,6 @@ def render():
         madr = stats.get("MADR")
         st.caption(f"MADR：{madr:.4f}" if madr is not None and pd.notna(madr) else "MADR：—")
 
-        # ======= 右上角加入觀察 =======
         with st.container():
             right = st.columns([1, 1, 1, 1, 1, 1, 1])[-1]
             with right:
@@ -140,3 +132,8 @@ def render():
                     st.success("已加入觀察名單")
     except Exception as e:
         st.error(f"❌ 查詢股票失敗：{e}")
+
+# 與 app.py 相容的入口
+def show(prefill_symbol: Optional[str] = None) -> None:
+    # 為相容舊版 app.py：外部仍可呼叫 show()
+    render(prefill_symbol=prefill_symbol)
