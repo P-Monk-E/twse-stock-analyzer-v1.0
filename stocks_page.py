@@ -1,136 +1,158 @@
-# =========================================
-# stocks_page.py  (覆蓋；邏輯不變，只沿用新圖表)
-# =========================================
 from __future__ import annotations
+
 import math
-from typing import Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
-import pytz
 
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
-from chart_utils import plot_candlestick_with_indicators, PLOTLY_TV_CONFIG, _ensure_ohlc
+from chart_utils import plot_candlestick_with_ma
 from risk_grading import (
-    grade_alpha, grade_sharpe, grade_treynor,
-    grade_debt_equity, grade_current_ratio, grade_roe, summarize,
+    grade_alpha,
+    grade_sharpe,
+    grade_debt_equity,
+    grade_current_ratio,
+    grade_roe,
+    summarize,
 )
+from watchlist_page import add_to_watchlist  # 直接寫入觀察名單  【函式介面】:contentReference[oaicite:3]{index=3}
 
-def _fmt2(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
-def _fmt2pct(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x*100:.2f}%"
-def _fmt0(x: Optional[float]) -> str: return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
 
-def _normalize_tw_ticker(sym: str) -> str:
-    s = str(sym).upper().strip()
-    return s if s.endswith((".TW",".TWO")) or s.startswith("^") else f"{s}.TW"
+def _sync_symbol_from_input() -> None:
+    txt = (st.session_state.get("stock_symbol") or "").strip()
+    if txt:
+        st.query_params["symbol"] = txt
+    elif "symbol" in st.query_params:
+        del st.query_params["symbol"]
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def _download_ohlc_60m(ticker: str, period: str="90d") -> pd.DataFrame:
+
+def _tag(val: Optional[float], thr: float, greater: bool = True) -> str:
+    if val is None or (isinstance(val, float) and (math.isnan(val) or pd.isna(val))):
+        return "❓"
+    return "✅" if ((val >= thr) if greater else (val <= thr)) else "❗"
+
+
+def _fmt2(v: Optional[float]) -> str:
     try:
-        df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
-        return _ensure_ohlc(df)
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f"{float(v):.2f}"
     except Exception:
-        return pd.DataFrame(columns=["Open","High","Low","Close"])
+        return "—"
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def _market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
-    for idx in ["^TWII","^TAIEX","^GSPC"]:
-        try:
-            h = yf.Ticker(idx).history(start=start, end=end, auto_adjust=False)
-            if h is not None and not h.empty and "Close" in h:
-                s = h["Close"].copy(); s.name = idx; return s
-        except Exception:
-            continue
-    return None
 
-def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.DataFrame, str]:
-    if tf == "60m": return _download_ohlc_60m(ticker, "90d"), "（60 分鐘）"
-    return daily_df.copy(), "（日 K）"
-
-def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
+def _fmt2pct(v: Optional[float]) -> str:
     try:
-        tail = yf.Ticker(_normalize_tw_ticker(ticker)).history(period="7d", interval="1d", auto_adjust=False)
-        tail = _ensure_ohlc(tail)
-        out  = pd.concat([_ensure_ohlc(df), tail])
-        out  = out[~out.index.duplicated(keep="last")].sort_index()
-        return out
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f"{float(v) * 100:.2f}%"
     except Exception:
-        return _ensure_ohlc(df)
+        return "—"
 
-def _tpe_time_range(days: int=366) -> tuple[pd.Timestamp, pd.Timestamp]:
-    tz = pytz.timezone("Asia/Taipei")
-    now_tpe = pd.Timestamp.now(tz=tz)
-    end_aware   = now_tpe.normalize() + pd.Timedelta(days=2)
-    start_aware = end_aware - pd.Timedelta(days=days)
-    return start_aware.tz_convert(None), end_aware.tz_convert(None)
 
-def _kpi_grid(items: list[tuple[str,str,str]], cols: int=5) -> None:
-    if not items: return
-    it = iter(items)
-    for _ in range((len(items)+cols-1)//cols):
-        cs = st.columns(cols)
-        for c in cs:
-            try: n,v,h = next(it)
-            except StopIteration: break
-            with c: st.metric(label=n, value=v, help=h or None)
+def _fmt2comma(v: Optional[float]) -> str:
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f"{float(v):,.2f}"
+    except Exception:
+        return "—"
 
-def render(prefill_symbol: Optional[str]=None) -> None:
-    st.header("股票")
-    c1, c2 = st.columns([3,2])
-    with c1:
-        default_kw = prefill_symbol or st.session_state.get("last_stock_kw","2330")
-        keyword = st.text_input("輸入股票代碼或名稱", value=default_kw)
-    with c2:
-        tf = st.radio("K 線週期", options=["60m","日"], index=1, horizontal=True)
 
-    if not keyword:
-        st.info("請輸入關鍵字（例：2330 或 台積電）"); return
+def show(prefill_symbol: str | None = None) -> None:
+    st.header("📈 股票")
+
+    default_symbol = st.query_params.get("symbol", prefill_symbol or "")
+    st.text_input(
+        "輸入股票代碼或名稱",
+        value=default_symbol,
+        key="stock_symbol",
+        on_change=_sync_symbol_from_input,
+    )
+    user_input = (st.session_state.get("stock_symbol") or "").strip()
+    if not user_input:
+        st.info("請輸入股票名稱或代碼以查詢。")
+        return
 
     try:
-        ticker = find_ticker_by_name(keyword)
-        name   = TICKER_NAME_MAP.get(ticker, "")
-        st.session_state["last_stock_kw"] = keyword
-
+        ticker = find_ticker_by_name(user_input)
         if is_etf(ticker):
-            st.warning("這是 ETF，請改至「ETF」分頁查詢。"); return
+            st.warning("偵測到輸入為 ETF，請切換至「ETF」頁面查詢。")
+            return
 
-        start, end = _tpe_time_range(366)
-        market_close = _market_close_series(start, end)
-        if market_close is None:
-            st.error("抓不到市場指數收盤價（^TWII/^TAIEX/^GSPC）"); return
+        end = datetime.today()
+        start = end - timedelta(days=365 * 3)
         rf = 0.01
+        mkt_close = yf.Ticker("^TWII").history(start=start, end=end)["Close"]
 
-        stats = get_metrics(ticker, market_close, rf, start, end, is_etf=False)
-        if not stats: st.error("查無此標的的歷史資料。"); return
+        stats = get_metrics(ticker, mkt_close, rf, start, end, is_etf=False)
+        if not stats:
+            st.warning("查無該股票資料或資料不足。")
+            return
 
-        base_df = _ensure_ohlc(stats["df"])
-        base_df = _backfill_latest_daily(ticker, base_df)
+        name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
 
-        with st.container(border=True):
+        # 標題 + 右上角加入觀察
+        c1, c2 = st.columns([1, 0.15])
+        with c1:
             st.subheader(f"{name or ticker}（{ticker}）")
-            grades = {
-                "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
-                "Treynor": grade_treynor(stats.get("Treynor")),
-                "Alpha":  grade_alpha(stats.get("Alpha")),
-                "負債權益比": grade_debt_equity(stats.get("負債權益比")),
-                "流動比率":   grade_current_ratio(stats.get("流動比率")),
-                "ROE":      grade_roe(stats.get("ROE")),
-            }
-            crit, warn, good = summarize(grades)
-            if crit: st.error("關鍵風險：" + "、".join(crit))
-            if warn: st.warning("注意項：" + "、".join(warn))
-            if good: st.success("達標：" + "、".join(good))
+        with c2:
+            if st.button("＋ 加入觀察", key="btn_watch_stock"):
+                add_to_watchlist("stock", ticker, name or ticker)
 
-        tf_df, tf_note = _prepare_tf_df(ticker, base_df, tf)
-        if tf_df.empty: st.error("查無對應週期的價格資料。"); return
+        # ======= Top KPI（**無 Treynor**）=======
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
+            st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
+        with col2:
+            st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe Ratio")))
+            st.caption(_tag(stats.get("Sharpe Ratio"), 1, True) + " >1 佳")
+        with col3:
+            st.metric("Beta", _fmt2(stats.get("Beta")))
+            st.caption("相對市場波動")
 
-        title = f"{name or ticker}（{ticker}）技術圖 {tf_note}"
-        fig = plot_candlestick_with_indicators(tf_df, title=title, uirevision_key=f"{ticker}_{tf}")
-        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_TV_CONFIG)
+        # ======= 風險摘要（不含 Treynor）=======
+        grades = {
+            "Alpha": grade_alpha(stats.get("Alpha")),
+            "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
+        }
+        v_de = stats.get("負債權益比")
+        v_cr = stats.get("流動比率")
+        v_roe = stats.get("ROE")
+        grades["負債權益比"] = grade_debt_equity(v_de if pd.notna(v_de) else None)
+        grades["流動比率"] = grade_current_ratio(v_cr if pd.notna(v_cr) else None)
+        grades["ROE"] = grade_roe(v_roe if pd.notna(v_roe) else None)
+
+        crit, warn, _ = summarize(grades)
+        if crit:
+            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
+        elif warn:
+            st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
+        else:
+            st.success("✅ 指標狀態良好。")
+
+        # ======= 財務列（全部顯示數字）=======
+        equity = stats.get("Equity")
+        eps_ttm = stats.get("EPS_TTM")
+        col_a, col_b, col_c, col_d, col_e = st.columns(5)
+        with col_a:
+            st.metric("負債權益比", _fmt2(v_de))
+        with col_b:
+            st.metric("流動比率", _fmt2(v_cr))
+        with col_c:
+            st.metric("ROE", _fmt2pct(v_roe))
+        with col_d:
+            st.metric("股東權益", _fmt2comma(equity))
+        with col_e:
+            st.metric("EPS (TTM)", _fmt2(eps_ttm))
+
+        # ======= 圖 =======
+        fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖（日 K）")
+        st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
         st.error(f"❌ 查詢股票失敗：{e}")
-
-def show(prefill_symbol: Optional[str]=None) -> None:
-    render(prefill_symbol=prefill_symbol)
