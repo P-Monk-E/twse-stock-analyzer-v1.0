@@ -11,10 +11,10 @@ from plotly.subplots import make_subplots
 # 只保留「全螢幕」；允許滾輪縮放
 PLOTLY_TV_CONFIG = {
     "displaylogo": False,
-    "scrollZoom": True,                      # 滾輪縮放（X 軸）
+    "scrollZoom": True,                      # 滾輪縮放
     "modeBarButtonsToAdd": ["toggleFullscreen"],
     "modeBarButtonsToRemove": [
-        # 移除所有會觸發框選/放大的工具
+        # 拿掉框選/矩形縮放等工具
         "zoom2d", "pan2d", "select2d", "lasso2d",
         "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d",
         "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
@@ -106,9 +106,9 @@ def plot_candlestick_with_indicators(
       1) Candlestick + MA(5/10/20) + Bollinger(20,2σ)
       2) RSI(14) + 70/30 lines
       3) MACD(12,26,9) hist + line + KDJ-J (secondary y)
-    - 滑鼠：左鍵平移、滾輪水平放大
-    - 休市日隱藏（無縫）
-    - KDJ 的顯示：軸使用 0–1，但刻度顯示 0–100（單位維持）
+    - 滑鼠：左鍵平移、滾輪**等比放大主圖**（X+Y）
+    - 休市日隱藏（rangebreaks）
+    - KDJ：軸 0–1、刻度顯示 0–100
     """
     data = _ensure_ohlc(df)
     if data.empty:
@@ -168,7 +168,7 @@ def plot_candlestick_with_indicators(
     fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["MACD"],   name="MACD",   mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["SIGNAL"], name="Signal", mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
 
-    # KDJ-J：以 0–1 軸繪圖，但刻度顯示 0–100（數字單位保持）
+    # KDJ-J：以 0–1 軸繪圖，但刻度顯示 0–100
     fig.add_trace(
         go.Scatter(
             x=kdj_j.index, y=kdj_j / 100.0, name="KDJ-J",
@@ -181,27 +181,28 @@ def plot_candlestick_with_indicators(
         title=title or "",
         xaxis_rangeslider_visible=False,
         uirevision=uirevision_key,
-        dragmode="pan",                                 # 左鍵平移
+        dragmode="pan",
         hovermode="x unified",
         legend=dict(orientation="h", x=0, xanchor="left", y=-0.15, yanchor="top"),
-        margin=dict(l=8, r=8, t=48, b=72),             # 底部留空給圖例
-        bargap=0.1,                                    # MACD 柱狀更飽滿
+        margin=dict(l=8, r=8, t=48, b=72),
+        bargap=0.1,
     )
 
-    # y 軸固定範圍 → 滾輪只縮放 X；避免垂直縮放造成誤觸
-    fig.update_yaxes(fixedrange=True, row=1, col=1)
+    # === 軸設定 ===
+    # 主圖 Y 軸：不固定（允許滾輪同時縮放 X+Y → 等比放大）
+    fig.update_yaxes(row=1, col=1, fixedrange=False, showspikes=True, spikemode="across", spikesnap="cursor",
+                     showline=True, ticks="outside")
+
+    # RSI/MACD：固定 Y，避免誤縮放
     fig.update_yaxes(title_text="RSI", range=[0, 100], fixedrange=True, row=2, col=1)
     fig.update_yaxes(title_text="MACD", zeroline=True, fixedrange=True, row=3, col=1, secondary_y=False)
 
     # 右側（KDJ）軸：0–1，但刻度顯示 0–100
-    tickvals = np.linspace(0, 1, 6)  # 0,0.2,...,1
+    tickvals = np.linspace(0, 1, 6)
     ticktext = [f"{int(v*100)}" for v in tickvals]
-    fig.update_yaxes(
-        title_text="KDJ-J",
-        range=[-0.2, 1.2], fixedrange=True,
-        tickvals=tickvals.tolist(), ticktext=ticktext,
-        row=3, col=1, secondary_y=True,
-    )
+    fig.update_yaxes(title_text="KDJ-J", range=[-0.2, 1.2], fixedrange=True,
+                     tickvals=tickvals.tolist(), ticktext=ticktext,
+                     row=3, col=1, secondary_y=True)
 
     # 網格
     fig.update_xaxes(showgrid=False)
