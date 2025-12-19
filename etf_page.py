@@ -1,6 +1,6 @@
 # =========================================
 # /mnt/data/etf_page.py
-# 60m/日 K；補到最新交易日（台北時區 +1 天）；不顯示休市日；三圖共用日期線
+# 同步修正：資料慢一天補齊、休市日不顯示、60m/日切換
 # =========================================
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ from portfolio_risk_utils import diversification_warning
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
 from chart_utils import plot_candlestick_with_indicators, PLOTLY_TV_CONFIG
 
-def _normalize_tw_ticker_once(sym: str) -> str:
+def _normalize_tw_ticker(sym: str) -> str:
     s = str(sym).upper().strip()
     return s if s.endswith((".TW", ".TWO")) or s.startswith("^") else f"{s}.TW"
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "90d") -> pd.DataFrame:
+def _download_ohlc_60m(ticker: str, period: str = "90d") -> pd.DataFrame:
     try:
-        df = yf.Ticker(_normalize_tw_ticker_once(ticker)).history(period=period, interval=interval, auto_adjust=False)
+        df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         return df[["Open", "High", "Low", "Close"]].dropna(how="any")
@@ -31,7 +31,7 @@ def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "9
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _get_market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
+def _market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
     for idx in ["^TWII", "^TAIEX", "^GSPC"]:
         try:
             h = yf.Ticker(idx).history(start=start, end=end, auto_adjust=False)
@@ -41,22 +41,32 @@ def _get_market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional
             continue
     return None
 
-def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> Tuple[pd.DataFrame, str]:
-    if tf_label == "60m":
-        return _download_ohlc_intraday(ticker, "60m", "90d"), "（60 分鐘）"
-    else:
-        return base_daily_df.copy(), "（日 K）"
+def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.DataFrame, str]:
+    if tf == "60m":
+        return _download_ohlc_60m(ticker, "90d"), "（60 分鐘）"
+    return daily_df.copy(), "（日 K）"
 
-def _kpi_grid(metrics: list[tuple[str, str, str]], cols: int = 4) -> None:
-    if not metrics: return
-    rows = (len(metrics) + cols - 1) // cols
-    it = iter(metrics)
-    for _ in range(rows):
+def _backfill_latest_daily(ticker: str, df: pd.DataFrame) -> pd.DataFrame:
+    try:
+        tail = yf.Ticker(_normalize_tw_ticker(ticker)).history(period="7d", interval="1d", auto_adjust=False)
+        if tail is None or tail.empty:
+            return df
+        tail = tail[["Open", "High", "Low", "Close"]].dropna(how="any")
+        out = pd.concat([df[["Open","High","Low","Close"]], tail])
+        out = out[~out.index.duplicated(keep="last")]
+        return out.sort_index()
+    except Exception:
+        return df
+
+def _kpi_grid(items: list[tuple[str, str, str]], cols: int = 4) -> None:
+    if not items: return
+    it = iter(items)
+    for _ in range((len(items) + cols - 1) // cols):
         cs = st.columns(cols)
         for c in cs:
-            try: name, val, hp = next(it)
+            try: n, v, h = next(it)
             except StopIteration: break
-            with c: st.metric(label=name, value=val, help=hp or None)
+            with c: st.metric(label=n, value=v, help=h or None)
 
 def render(prefill_symbol: Optional[str] = None) -> None:
     st.header("ETF")
@@ -65,7 +75,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         default_kw = prefill_symbol or st.session_state.get("last_etf_kw", "0050")
         keyword = st.text_input("輸入 ETF 代碼或名稱", value=default_kw)
     with c2:
-        tf_label = st.radio("K 線週期", options=["60m", "日"], index=1, horizontal=True)
+        tf = st.radio("K 線週期", options=["60m", "日"], index=1, horizontal=True)
 
     if not keyword:
         st.info("請輸入關鍵字（例：0050 或 台灣50）"); return
@@ -79,10 +89,10 @@ def render(prefill_symbol: Optional[str] = None) -> None:
 
         tz = pytz.timezone("Asia/Taipei")
         now_tpe = pd.Timestamp.now(tz=tz)
-        end = now_tpe.normalize() + pd.Timedelta(days=1)  # 包含今日
-        start = end - pd.Timedelta(days=366)
+        end = (now_tpe.normalize() + pd.Timedelta(days=2)).tz_convert(None)
+        start = (end - pd.Timedelta(days=366)).tz_convert(None)
 
-        market_close = _get_market_close_series(start, end)
+        market_close = _market_close_series(start, end)
         if market_close is None:
             st.error("抓不到市場指數收盤價（^TWII/^TAIEX/^GSPC）"); return
         rf = 0.01
@@ -103,30 +113,31 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         if good: st.success("達標：" + "、".join(good))
 
         msg = diversification_warning(
-            stats.get("Sharpe Ratio"),
-            stats.get("Treynor"),
+            stats.get("Sharpe Ratio"), stats.get("Treynor"),
             non_sys_thr=float(st.session_state.get("non_sys_thr", 0.5)),
             sys_thr=float(st.session_state.get("sys_thr", 0.5)),
         )
         if msg: st.warning(msg)
 
-        kpis = [
+        base_df: pd.DataFrame = stats["df"].copy()
+        if not isinstance(base_df.index, pd.DatetimeIndex):
+            base_df.index = pd.to_datetime(base_df.index)
+        base_df = _backfill_latest_daily(ticker, base_df)
+
+        _kpi_grid([
             ("Alpha", f'{stats.get("Alpha"):.2f}' if stats.get("Alpha") is not None else "—", ""),
             ("Beta", f'{stats.get("Beta"):.2f}' if stats.get("Beta") is not None else "—", ""),
             ("Sharpe", f'{stats.get("Sharpe Ratio"):.2f}' if stats.get("Sharpe Ratio") is not None else "—", ""),
             ("Treynor", f'{stats.get("Treynor"):.2f}' if stats.get("Treynor") is not None else "—", ""),
             ("MADR", f'{stats.get("MADR"):.2f}' if stats.get("MADR") is not None else "—", ""),
             ("配息TTM", f'{stats.get("EPS_TTM"):.2f}' if stats.get("EPS_TTM") is not None else "—", "近四次配息合計"),
-        ]
-        _kpi_grid(kpis, cols=4)
+        ], cols=4)
 
-        base_df: pd.DataFrame = stats["df"].copy()
-        if not isinstance(base_df.index, pd.DatetimeIndex): base_df.index = pd.to_datetime(base_df.index)
-        tf_df, tf_note = _prepare_tf_df(ticker, base_df, tf_label)
+        tf_df, tf_note = _prepare_tf_df(ticker, base_df, tf)
         if tf_df.empty: st.error("查無對應週期的價格資料。"); return
 
         title = f"{name or ticker}（{ticker}）技術圖 {tf_note}"
-        fig = plot_candlestick_with_indicators(tf_df, title=title, uirevision_key=f"{ticker}_{tf_label}")
+        fig = plot_candlestick_with_indicators(tf_df, title=title, uirevision_key=f"{ticker}_{tf}")
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_TV_CONFIG)
     except Exception as e:
         st.error(f"❌ 查詢 ETF 失敗：{e}")
