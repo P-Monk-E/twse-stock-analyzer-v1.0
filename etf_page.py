@@ -1,9 +1,8 @@
 # =========================================
 # /mnt/data/etf_page.py
-# 修復 tz-naive 錯誤；60m/日K；日期線貫穿；移除休市日；少一天自動回補；只允許 ETF
+# 60m/日K；日期線貫穿；不顯示休市日；少一天自動回補；修正 tz-naive 錯誤；只允許 ETF
 # =========================================
 from __future__ import annotations
-
 from typing import Optional, Tuple
 
 import pandas as pd
