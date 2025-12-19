@@ -1,154 +1,142 @@
 # =========================================
-# /mnt/data/stocks_page.py  （右上角「＋加入觀察」）
+# /mnt/data/stocks_page.py  （右上角「＋加入觀察」 + 60m/日/週/月 K 線切換）
 # =========================================
 from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
-from chart_utils import plot_candlestick_with_ma, PLOTLY_TV_CONFIG
+from chart_utils import plot_candlestick_with_ma, resample_ohlc, PLOTLY_TV_CONFIG
 from risk_grading import (
     grade_alpha,
     grade_sharpe,
+    grade_treynor,
     grade_debt_equity,
     grade_current_ratio,
     grade_roe,
     summarize,
 )
-from watchlist_page import add_to_watchlist  # 新增
-# 本檔其餘結構沿用你現有版本。 :contentReference[oaicite:1]{index=1}
 
-def _sync_symbol_from_input() -> None:
-    txt = (st.session_state.get("stock_symbol") or "").strip()
-    if txt:
-        st.query_params["symbol"] = txt
-    elif "symbol" in st.query_params:
-        del st.query_params["symbol"]
+# --------- 小工具 ---------
+def _fmt2(x: Optional[float]) -> str:
+    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
 
-def _tag(val: Optional[float], thr: float, greater: bool = True) -> str:
-    if val is None or (isinstance(val, float) and (math.isnan(val) or pd.isna(val))):
-        return "❓"
-    return "✅" if ((val >= thr) if greater else (val <= thr)) else "❗"
+def _fmt2pct(x: Optional[float]) -> str:
+    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x*100:.2f}%"
 
-def _fmt2(v: Optional[float]) -> str:
+def _fmt0(x: Optional[float]) -> str:
+    return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
+
+def _icon(ok: str) -> str:
+    return "🟢" if ok == "A" else "🟡" if ok in ("B", "C") else "🟠" if ok == "D" else "🔴"
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "60d") -> pd.DataFrame:
+    """下載 60 分鐘線資料；失敗時回空 df（避免整頁爆炸）。"""
     try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return "—"
-        return f"{float(v):.2f}"
+        df = yf.download(ticker, period=period, interval=interval, auto_adjust=False, progress=False)
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        return df[["Open", "High", "Low", "Close"]].dropna(how="any")
     except Exception:
-        return "—"
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
-def _fmt2pct(v: Optional[float]) -> str:
-    try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return "—"
-        return f"{float(v)*100:.2f}%"
-    except Exception:
-        return "—"
+def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> Tuple[pd.DataFrame, str]:
+    """
+    根據選擇回傳 60m/日/週/月 dataframe 與標題附註。
+    - 60m：另外抓取（近 60 天）。
+    - 日：直接用 base_daily_df。
+    - 週/月：以日線重採樣。
+    """
+    if tf_label == "60m":
+        df = _download_ohlc_intraday(ticker, "60m", "60d")
+        note = "（60 分鐘）"
+    elif tf_label == "日":
+        df = base_daily_df.copy()
+        note = "（日 K）"
+    elif tf_label == "週":
+        df = resample_ohlc(base_daily_df, "W")
+        note = "（週 K）"
+    else:
+        df = resample_ohlc(base_daily_df, "M")
+        note = "（月 K）"
+    return df, note
 
-def _fmt2comma(v: Optional[float]) -> str:
-    try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return "—"
-        return f"{float(v):,.2f}"
-    except Exception:
-        return "—"
+# --------- 主頁面 ---------
+def render():
+    st.header("股票")
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        keyword = st.text_input("輸入股票代碼或名稱", value=st.session_state.get("last_stock_kw", "2330"))
+    with col2:
+        tf_label = st.radio("K 線週期", options=["60m", "日", "週", "月"], index=1, horizontal=True)
 
-def show(prefill_symbol: str | None = None) -> None:
-    st.header("📈 股票專區")
-
-    default_symbol = st.query_params.get("symbol", prefill_symbol or "")
-    st.text_input("輸入股票名稱或代碼（例：台積電 或 2330）",
-                  value=default_symbol, key="stock_symbol", on_change=_sync_symbol_from_input)
-    user_input = (st.session_state.get("stock_symbol") or "").strip()
-    if not user_input:
-        st.info("請輸入股票名稱或代碼以查詢。")
+    if not keyword:
+        st.info("請輸入關鍵字（例：2330 或 台積電）")
         return
 
     try:
-        ticker = find_ticker_by_name(user_input)
-        if is_etf(ticker):
-            st.warning("偵測到輸入為 ETF，請切換至「ETF」頁面查詢。")
-            return
+        ticker, name = find_ticker_by_name(keyword)
+        st.session_state["last_stock_kw"] = keyword
 
-        end = datetime.today()
-        start = end - timedelta(days=365 * 3)
-        rf = 0.01
-        mkt_close = yf.Ticker("^TWII").history(start=start, end=end)["Close"]
+        # 拉基本指標與日線資料（get_metrics 內已處理快取）
+        stats = get_metrics(ticker)
 
-        stats = get_metrics(ticker, mkt_close, rf, start, end, is_etf=False)
-        if not stats:
-            st.warning("查無該股票資料或資料不足。")
-            return
-
-        name = stats.get("name") or TICKER_NAME_MAP.get(ticker, "")
-        # ---- 標題 + 右上角加入觀察 ----
-        c1, c2 = st.columns([1, 0.15])
-        with c1:
+        # ======= KPI 區 =======
+        with st.container(border=True):
             st.subheader(f"{name or ticker}（{ticker}）")
-        with c2:
-            if st.button("＋ 加入觀察", key="btn_watch_stock"):
-                add_to_watchlist("stock", ticker, name or ticker)
+            is_etf_flag = is_etf(ticker)
+            if is_etf_flag:
+                st.warning("這看起來像是 ETF，建議改到「ETF」分頁查詢。")
 
-        # ======= Top KPI：三欄（無 Treynor）=======
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Alpha(年化)", _fmt2(stats.get("Alpha")))
-            st.caption(_tag(stats.get("Alpha"), 0, True) + " 越大越好")
-        with col2:
-            st.metric("Sharpe Ratio", _fmt2(stats.get("Sharpe Ratio")))
-            st.caption(_tag(stats.get("Sharpe Ratio"), 1, True) + " >1 佳")
-        with col3:
-            st.metric("Beta", _fmt2(stats.get("Beta")))
-            st.caption("相對市場波動")
+            sharpe_grade = grade_sharpe(stats.get("Sharpe Ratio"))
+            treynor_grade = grade_treynor(stats.get("Treynor"))
+            alpha_grade = grade_alpha(stats.get("Alpha"))
+            de_grade = grade_debt_equity(stats.get("負債權益比"))
+            cur_grade = grade_current_ratio(stats.get("流動比率"))
+            roe_grade = grade_roe(stats.get("ROE"))
+            msg = summarize(sharpe_grade, treynor_grade, alpha_grade, de_grade, cur_grade, roe_grade)
+            st.write(msg)
 
-        # ======= 風險摘要（不含新欄位）=======
-        grades = {
-            "Alpha":  grade_alpha(stats.get("Alpha")),
-            "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
-        }
-        v_de = stats.get("負債權益比")
-        v_cr = stats.get("流動比率")
-        v_roe = stats.get("ROE")
-        grades["負債權益比"] = grade_debt_equity(v_de if pd.notna(v_de) else None)
-        grades["流動比率"]   = grade_current_ratio(v_cr if pd.notna(v_cr) else None)
-        grades["ROE"]        = grade_roe(v_roe if pd.notna(v_roe) else None)
+            equity = stats.get("Equity")
+            eps_ttm = stats.get("EPS_TTM")
+            v_roe = stats.get("ROE")
+            line = (
+                f"**ROE**：{_fmt2pct(v_roe)} {_icon(roe_grade)} ｜ "
+                f"**股東權益**：{_fmt0(equity)} ｜ "
+                f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
+            )
+            st.markdown(line)
 
-        crit, warn, _ = summarize(grades)
-        if crit:
-            st.warning("⚠ 風險摘要：**" + "、".join(crit) + "** 未達標。")
-        elif warn:
-            st.info("⚠ 注意：**" + "、".join(warn) + "** 表現普通。")
+        # ======= 圖表（含 60m/日/週/月） =======
+        base_df: pd.DataFrame = stats["df"].copy()
+        if not isinstance(base_df.index, pd.DatetimeIndex):
+            base_df.index = pd.to_datetime(base_df.index)
+
+        tf_df, tf_note = _prepare_tf_df(ticker, base_df, tf_label)
+        if tf_df.empty:
+            st.error("查無對應週期的價格資料。")
         else:
-            st.success("✅ 指標狀態良好。")
+            title = f"{name or ticker}（{ticker}）技術圖 {tf_note}"
+            fig = plot_candlestick_with_ma(tf_df, title=title, uirevision_key=f"{ticker}_{tf_label}")
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_TV_CONFIG)
 
-        # ======= 財務列：原三項 + 股東權益 + EPS(TTM) =======
-        equity = stats.get("Equity")
-        eps_ttm = stats.get("EPS_TTM")
-
-        def _icon(name: str) -> str:
-            return grades[name][0]
-
-        line = (
-            f"**負債權益比**：{_fmt2(v_de)} {_icon('負債權益比')} ｜ "
-            f"**流動比率**：{_fmt2(v_cr)} {_icon('流動比率')} ｜ "
-            f"**ROE**：{_fmt2pct(v_roe)} {_icon('ROE')} ｜ "
-            f"**股東權益**：{_fmt2comma(equity)} ｜ "
-            f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
-        )
-        st.markdown(line)  # 股東權益 / EPS 僅顯示，不評分
-
-        # ======= 圖表 =======
-        fig = plot_candlestick_with_ma(stats["df"].copy(), title=f"{name or ticker}（{ticker}）技術圖")
-        st.plotly_chart(fig, use_container_width=True)
         madr = stats.get("MADR")
         st.caption(f"MADR：{madr:.4f}" if madr is not None and pd.notna(madr) else "MADR：—")
 
+        # ======= 右上角加入觀察 =======
+        with st.container():
+            right = st.columns([1, 1, 1, 1, 1, 1, 1])[-1]
+            with right:
+                if st.button("＋加入觀察", use_container_width=True):
+                    from watchlist_page import add_to_watchlist
+                    add_to_watchlist(symbol_or_name=ticker, name=name, kind_kw="stock")
+                    st.success("已加入觀察名單")
     except Exception as e:
         st.error(f"❌ 查詢股票失敗：{e}")
