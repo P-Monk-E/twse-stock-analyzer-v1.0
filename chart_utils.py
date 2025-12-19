@@ -14,7 +14,7 @@ PLOTLY_TV_CONFIG = {
     "scrollZoom": True,                      # 滾輪縮放
     "modeBarButtonsToAdd": ["toggleFullscreen"],
     "modeBarButtonsToRemove": [
-        # 拿掉框選/矩形縮放等工具
+        # 移除框選/矩形縮放等工具
         "zoom2d", "pan2d", "select2d", "lasso2d",
         "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d",
         "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
@@ -106,9 +106,9 @@ def plot_candlestick_with_indicators(
       1) Candlestick + MA(5/10/20) + Bollinger(20,2σ)
       2) RSI(14) + 70/30 lines
       3) MACD(12,26,9) hist + line + KDJ-J (secondary y)
-    - 滑鼠：左鍵平移、滾輪**等比放大主圖**（X+Y）
+    - 滑鼠：左鍵平移、滾輪放大（主圖/MACD/KDJ 皆可 X+Y 縮放）
     - 休市日隱藏（rangebreaks）
-    - KDJ：軸 0–1、刻度顯示 0–100
+    - KDJ：以 0–1 軸繪圖，但刻度顯示 0–100
     """
     data = _ensure_ohlc(df)
     if data.empty:
@@ -122,7 +122,7 @@ def plot_candlestick_with_indicators(
 
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-        # 讓 MACD 區更高，比例更接近你右圖
+        # MACD 區更高，比例接近 TradingView
         row_heights=[0.52, 0.14, 0.34],
         specs=[[{}], [{}], [{"secondary_y": True}]],
     )
@@ -186,31 +186,31 @@ def plot_candlestick_with_indicators(
         hovermode="x unified",
         legend=dict(orientation="h", x=0, xanchor="left", y=-0.15, yanchor="top"),
         margin=dict(l=8, r=8, t=48, b=72),
-        bargap=0.05,                                # 柱距變小 → 視覺更飽滿
+        bargap=0.05,
     )
 
-    # === 軸設定 ===
-    # 主圖 Y 軸：不固定（等比放大）
-    fig.update_yaxes(row=1, col=1, fixedrange=False, showspikes=True, spikemode="across", spikesnap="cursor",
-                     showline=True, ticks="outside")
+    # === 軸設定（不鎖 Y）===
+    # 主圖：可縮放 Y
+    fig.update_yaxes(row=1, col=1, fixedrange=False, showspikes=True, spikemode="across",
+                     spikesnap="cursor", showline=True, ticks="outside")
 
-    # RSI：固定 Y
+    # RSI：維持固定 Y，避免變形
     fig.update_yaxes(title_text="RSI", range=[0, 100], fixedrange=True, row=2, col=1)
 
-    # MACD：依資料動態設範圍（柱子約佔 80% 高度，比例接近右圖）
+    # MACD：初始範圍依資料，但允許縮放 Y
     hist = macd_h["HIST"].dropna()
     if not hist.empty:
         hmax = float(np.nanmax(np.abs(hist.values)))
-        pad = 0.4 * hmax  # 留白比例
+        pad = 0.4 * hmax
         macd_min, macd_max = -(hmax + pad), (hmax + pad)
-        fig.update_yaxes(title_text="MACD", range=[macd_min, macd_max], fixedrange=True, row=3, col=1, secondary_y=False)
+        fig.update_yaxes(title_text="MACD", range=[macd_min, macd_max], fixedrange=False, row=3, col=1, secondary_y=False)
     else:
-        fig.update_yaxes(title_text="MACD", zeroline=True, fixedrange=True, row=3, col=1, secondary_y=False)
+        fig.update_yaxes(title_text="MACD", zeroline=True, fixedrange=False, row=3, col=1, secondary_y=False)
 
-    # 右側（KDJ）軸：0–1，但刻度顯示 0–100；範圍收窄更聚焦
+    # 右側（KDJ）軸：0–1，刻度顯示 0–100；允許縮放 Y
     tickvals = np.linspace(0, 1, 6)
     ticktext = [f"{int(v*100)}" for v in tickvals]
-    fig.update_yaxes(title_text="KDJ-J", range=[-0.05, 1.05], fixedrange=True,
+    fig.update_yaxes(title_text="KDJ-J", range=[-0.05, 1.05], fixedrange=False,
                      tickvals=tickvals.tolist(), ticktext=ticktext,
                      row=3, col=1, secondary_y=True)
 
