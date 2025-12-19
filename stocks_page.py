@@ -1,7 +1,7 @@
 # =========================================
 # /mnt/data/stocks_page.py
-# 修正：get_metrics 參數 + find_ticker_by_name 只回傳代碼
-# 功能：60m/日/週/月 K 線、滑輪縮放、十字線、show() 相容 app.py
+# 修正：risk_grading.summarize 需傳 dict；完整改為分級摘要顯示
+# 仍保留：60m/日/週/月 K、滑輪縮放、十字線、show() 相容 app.py
 # =========================================
 from __future__ import annotations
 
@@ -39,9 +39,6 @@ def _fmt2pct(x: Optional[float]) -> str:
 def _fmt0(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
 
-def _icon(ok: str) -> str:
-    return "🟢" if ok == "A" else "🟡" if ok in ("B", "C") else "🟠" if ok == "D" else "🔴"
-
 # --------- 市場／價格工具 ---------
 def _normalize_tw_ticker_once(sym: str) -> str:
     s = str(sym).upper().strip()
@@ -49,7 +46,7 @@ def _normalize_tw_ticker_once(sym: str) -> str:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "60d") -> pd.DataFrame:
-    """避免整頁崩潰，所以錯誤時回空 DataFrame。"""
+    """下載 60 分鐘線；錯誤時回空 df（避免整頁崩潰）。"""
     try:
         df = yf.Ticker(_normalize_tw_ticker_once(ticker)).history(period=period, interval=interval)
         if not isinstance(df.index, pd.DatetimeIndex):
@@ -60,7 +57,7 @@ def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "6
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _get_market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
-    """alpha/beta 需 Close 再 pct_change；優先 TW 指數，不行用 GSPC。"""
+    """alpha/beta 需市場收盤價；優先 TW 指數，不行用 GSPC。"""
     for idx in ["^TWII", "^TAIEX", "^GSPC"]:
         try:
             h = yf.Ticker(idx).history(start=start, end=end)
@@ -107,7 +104,7 @@ def render(prefill_symbol: Optional[str] = None) -> None:
         name = TICKER_NAME_MAP.get(ticker, "")
         st.session_state["last_stock_kw"] = keyword
 
-        # ---- 準備 get_metrics 需要的參數 ----
+        # ---- get_metrics 需要的參數 ----
         end = pd.Timestamp.today().normalize()
         start = end - pd.Timedelta(days=365)
         market_close = _get_market_close_series(start, end)
@@ -123,20 +120,29 @@ def render(prefill_symbol: Optional[str] = None) -> None:
             if _is_etf_func(ticker):
                 st.warning("這看起來像是 ETF，建議改到「ETF」分頁查詢。")
 
-            sharpe_grade = grade_sharpe(stats.get("Sharpe Ratio"))
-            treynor_grade = grade_treynor(stats.get("Treynor"))
-            alpha_grade = grade_alpha(stats.get("Alpha"))
-            de_grade = grade_debt_equity(stats.get("負債權益比"))
-            cur_grade = grade_current_ratio(stats.get("流動比率"))
-            roe_grade = grade_roe(stats.get("ROE"))
-            msg = summarize(sharpe_grade, treynor_grade, alpha_grade, de_grade, cur_grade, roe_grade)
-            st.write(msg)
+            # 依新規格：先做 dict，再 summarize(dict)
+            grades = {
+                "Sharpe": grade_sharpe(stats.get("Sharpe Ratio")),
+                "Treynor": grade_treynor(stats.get("Treynor")),
+                "Alpha": grade_alpha(stats.get("Alpha")),
+                "負債權益比": grade_debt_equity(stats.get("負債權益比")),
+                "流動比率": grade_current_ratio(stats.get("流動比率")),
+                "ROE": grade_roe(stats.get("ROE")),
+            }
+            crit, warn, good = summarize(grades)
+
+            if crit:
+                st.error("關鍵風險：" + "、".join(crit))
+            if warn:
+                st.warning("注意項：" + "、".join(warn))
+            if good:
+                st.success("達標：" + "、".join(good))
 
             equity = stats.get("Equity")
             eps_ttm = stats.get("EPS_TTM")
             v_roe = stats.get("ROE")
             st.markdown(
-                f"**ROE**：{_fmt2pct(v_roe)} {_icon(roe_grade)} ｜ "
+                f"**ROE**：{_fmt2pct(v_roe)} ｜ "
                 f"**股東權益**：{_fmt0(equity)} ｜ "
                 f"**EPS(TTM)**：{_fmt2(eps_ttm)}"
             )
