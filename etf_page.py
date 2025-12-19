@@ -1,3 +1,43 @@
+# ================================
+# /mnt/data/etf_page.py
+# ETF頁：修正 NameError(Tuple)、其餘與股票頁一致；只允許 ETF
+# ================================
+from __future__ import annotations
+from typing import Optional, Tuple
+
+import pandas as pd
+import streamlit as st
+import yfinance as yf
+import pytz
+
+from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
+from portfolio_risk_utils import diversification_warning
+from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
+from chart_utils import plot_candlestick_with_indicators, PLOTLY_TV_CONFIG, _ensure_ohlc
+
+def _normalize_tw_ticker(sym: str) -> str:
+    s = str(sym).upper().strip()
+    return s if s.endswith((".TW", ".TWO")) or s.startswith("^") else f"{s}.TW"
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _download_ohlc_60m(ticker: str, period: str = "90d") -> pd.DataFrame:
+    try:
+        df = yf.Ticker(_normalize_tw_ticker(ticker)).history(period=period, interval="60m", auto_adjust=False)
+        return _ensure_ohlc(df)
+    except Exception:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
+    for idx in ["^TWII", "^TAIEX", "^GSPC"]:
+        try:
+            h = yf.Ticker(idx).history(start=start, end=end, auto_adjust=False)
+            if h is not None and not h.empty and "Close" in h:
+                s = h["Close"].copy(); s.name = idx; return s
+        except Exception:
+            continue
+    return None
+
 def _prepare_tf_df(ticker: str, daily_df: pd.DataFrame, tf: str) -> Tuple[pd.DataFrame, str]:
     if tf == "60m":
         return _download_ohlc_60m(ticker, "90d"), "（60 分鐘）"
@@ -41,7 +81,6 @@ def render(prefill_symbol: Optional[str] = None) -> None:
 
     if not keyword:
         st.info("請輸入關鍵字（例：0050 或 台灣50）"); return
-
     try:
         ticker = find_ticker_by_name(keyword)
         name = TICKER_NAME_MAP.get(ticker, "")
