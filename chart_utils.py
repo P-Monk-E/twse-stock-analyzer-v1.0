@@ -8,17 +8,16 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# 只保留 Streamlit 的全螢幕（隱藏 Plotly modebar）
 PLOTLY_TV_CONFIG = {
-    "scrollZoom": True,
+    "displayModeBar": False,            # 關閉 Plotly 工具列（避免與圖例重疊；保留 Streamlit 全螢幕）
     "displaylogo": False,
-    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],
+    "scrollZoom": True,
     "toImageButtonOptions": {"format": "png"},
 }
 
 def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normalize to ['Open','High','Low','Close'] with ascending DatetimeIndex.
-    """
+    """Normalize to ['Open','High','Low','Close'] with ascending DatetimeIndex."""
     if df is None or df.empty:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
@@ -99,7 +98,7 @@ def plot_candlestick_with_indicators(
     3-row plot:
       1) Candlestick + MA(5/10/20) + Bollinger(20,2σ)
       2) RSI(14) + 70/30 lines
-      3) MACD(12,26,9) hist + line + KDJ-J (secondary y)
+      3) MACD(12,26,9) hist + line + KDJ-J (secondary y; J 線以 ×0.01 顯示)
     """
     data = _ensure_ohlc(df)
     if data.empty:
@@ -113,7 +112,7 @@ def plot_candlestick_with_indicators(
 
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-        row_heights=[0.54, 0.16, 0.30],  # stronger MACD visibility
+        row_heights=[0.54, 0.16, 0.30],
         specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
@@ -127,16 +126,22 @@ def plot_candlestick_with_indicators(
     )
     for name in ["MA5", "MA10", "MA20"]:
         fig.add_trace(
-            go.Scatter(x=data.index, y=data[name], name=name, mode="lines", connectgaps=True, line=dict(width=2, dash="solid")),
+            go.Scatter(
+                x=data.index, y=data[name], name=name,
+                mode="lines", connectgaps=True, line=dict(width=2, dash="solid"),
+            ),
             row=1, col=1,
         )
-    fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_MID"], name="BB20", mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.55), row=1, col=1)
-    fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_UPPER"], name="+2σ", mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.35), row=1, col=1)
-    fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_LOWER"], name="-2σ", mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.35), row=1, col=1)
+    fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_MID"],   name="BB20", mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.55), row=1, col=1)
+    fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_UPPER"], name="+2σ",  mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.35), row=1, col=1)
+    fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_LOWER"], name="-2σ",  mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.35), row=1, col=1)
 
     # Row 2
     fig.add_trace(
-        go.Scatter(x=rsi.index, y=rsi, name="RSI(14)", mode="lines", connectgaps=True, line=dict(width=2, dash="solid")),
+        go.Scatter(
+            x=rsi.index, y=rsi, name="RSI(14)",
+            mode="lines", connectgaps=True, line=dict(width=2, dash="solid"),
+        ),
         row=2, col=1,
     )
     for yv in (70, 30):
@@ -146,37 +151,44 @@ def plot_candlestick_with_indicators(
     fig.add_trace(
         go.Bar(
             x=macd_h.index, y=macd_h["HIST"], name="MACD-Hist",
-            opacity=1.0, marker_line_width=0  # more solid bars
+            opacity=1.0, marker_line_width=0
         ),
         row=3, col=1, secondary_y=False,
     )
-    fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["MACD"], name="MACD", mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
+    fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["MACD"],   name="MACD",   mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=macd_h.index, y=macd_h["SIGNAL"], name="Signal", mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(x=kdj_j.index, y=kdj_j, name="KDJ-J", mode="lines", connectgaps=True, line=dict(width=2, dash="solid")), row=3, col=1, secondary_y=True)
 
+    # KDJ-J：僅視覺縮放（100 -> 1）
+    fig.add_trace(
+        go.Scatter(
+            x=kdj_j.index, y=kdj_j / 100.0, name="KDJ-J (×0.01)",
+            mode="lines", connectgaps=True, line=dict(width=2, dash="solid")),
+        row=3, col=1, secondary_y=True,
+    )
+
+    # 版面（圖例置上方，不與右上工具列重疊）
     fig.update_layout(
         title=title or "",
         xaxis_rangeslider_visible=False,
         uirevision=uirevision_key,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=8, r=8, t=36, b=8),
+        legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="left", x=0),
+        margin=dict(l=8, r=8, t=64, b=8),   # t 加大，避免圖例擠壓
         hovermode="x unified",
     )
-    # move legend to top-left to avoid overlap with modebar
-    fig.update_layout(legend=dict(x=0, xanchor="left"))
 
-    # axes/grid
-    fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor", showline=True, ticks="outside", row=1, col=1)
+    # y 軸與網格
+    fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor",
+                     showline=True, ticks="outside", row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
     fig.update_yaxes(title_text="MACD", zeroline=True, row=3, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="KDJ-J", range=[-20, 120], row=3, col=1, secondary_y=True)
+    fig.update_yaxes(title_text="KDJ-J", range=[-0.2, 1.2], row=3, col=1, secondary_y=True)  # 對應 ×0.01
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=1, col=1)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=2, col=1)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=3, col=1, secondary_y=False)
     fig.update_yaxes(showgrid=False, row=3, col=1, secondary_y=True)
 
-    # --- hide non-trading days: weekends + other holidays (no gaps) ---
+    # 隱藏休市日（週末 + 其他非交易日）
     idx = pd.DatetimeIndex(data.index).normalize()
     all_days = pd.date_range(idx.min(), idx.max(), freq="D")
     non_trading = all_days.difference(idx.unique())
