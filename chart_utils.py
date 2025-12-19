@@ -3,17 +3,16 @@
 # 主圖：K + MA5/10/20 + 布林(BB20,±2)
 # 中圖：RSI(14)
 # 下圖：MACD 柱體(12,26,9) + KDJ J(9,3,3)
-# 互動：滾輪縮放、十字線/統一日期線、保留縮放、無 rangeslider
+# 互動：滾輪縮放、統一日期線、保留縮放；自動移除休市日/週末/夜間(60m)
 # =========================================
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Iterable
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Streamlit plotly_chart 統一設定
 PLOTLY_TV_CONFIG = {
     "scrollZoom": True,
     "displaylogo": False,
@@ -54,7 +53,6 @@ def _kdj_j(df: pd.DataFrame, n: int = 9, ks: int = 3, ds: int = 3) -> pd.Series:
     return j
 
 def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
-    # Wilder's RSI
     delta = close.diff()
     up = delta.clip(lower=0.0)
     down = -delta.clip(upper=0.0)
@@ -65,18 +63,38 @@ def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     rsi.name = "RSI"
     return rsi
 
+# -------------------- 日期空隙移除 --------------------
+def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]:
+    """生成 Plotly rangebreaks：移除週末 + 非交易日；60m 亦移除夜間。"""
+    if not isinstance(idx, pd.DatetimeIndex) or idx.empty:
+        return []
+    # 週末
+    breaks = [dict(bounds=["sat", "mon"])]
+    # 非交易日（工作日但沒有資料）
+    days = pd.date_range(idx.min().normalize(), idx.max().normalize(), freq="D")
+    trading_days = pd.DatetimeIndex(pd.to_datetime(idx.date)).unique()
+    non_trading = days.difference(trading_days)
+    weekday_non_trading = non_trading[non_trading.weekday < 5]
+    if len(weekday_non_trading) > 0:
+        breaks.append(dict(values=weekday_non_trading.tz_localize(idx.tz) if idx.tz else weekday_non_trading))
+    # 60m：移除夜間（台股 09:00~13:30；取整點近似）
+    if is_intraday:
+        breaks.append(dict(pattern="hour", bounds=[14, 9]))  # 14:00~09:00 都不顯示
+    return breaks
+
 # -------------------- 主函式 --------------------
 def plot_candlestick_with_indicators(
     df: pd.DataFrame,
     title: str = "",
-    height: int = 780,
+    height: int = 800,
     uirevision_key: Optional[str] = "tv_like",
 ) -> go.Figure:
     """
     Row1：K + MA5/10/20 + BB20±2
     Row2：RSI(14)
-    Row3：MACD histogram(12,26,9) + KDJ(J, 9,3,3) 於 secondary_y
-    - 三列共用 X 軸；hovermode='x unified' → 在任一子圖 hover，三圖共享日期線
+    Row3：MACD histogram(12,26,9) + KDJ(J, 9,3,3) secondary_y
+    - 三列共用 X 軸；hovermode='x unified' → 日期線貫穿三圖
+    - 自動移除休市日與週末；60m 亦移除夜間
     """
     if df is None or df.empty:
         raise ValueError("Empty dataframe")
@@ -85,11 +103,16 @@ def plot_candlestick_with_indicators(
     if not isinstance(data.index, pd.DatetimeIndex):
         data.index = pd.to_datetime(data.index)
 
+    is_intraday = (data.index.freq is None and (data.index.to_series().diff().dt.total_seconds().median() or 0) <= 3600) or \
+                  (getattr(data.index, "inferred_freq", None) in ("H", "60T"))
+
     data = _ma(data)
     bb = _bb(data)
     macd_h = _macd_hist(data["Close"])
     kdj_j = _kdj_j(data)
     rsi = _rsi(data["Close"])
+
+    breaks = _compute_rangebreaks(data.index, is_intraday=is_intraday)
 
     fig = make_subplots(
         rows=3,
@@ -123,7 +146,7 @@ def plot_candlestick_with_indicators(
     fig.add_trace(go.Scatter(x=kdj_j.index, y=kdj_j, name="KDJ J", mode="lines"),
                   row=3, col=1, secondary_y=True)
 
-    # 互動/外觀（三列都開啟 spikelines；用 x unified 共享日期線）
+    # 互動/外觀：三列統一日期線
     fig.update_layout(
         title=title,
         height=height,
@@ -132,12 +155,14 @@ def plot_candlestick_with_indicators(
         uirevision=uirevision_key,
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        spikedistance=-1,  # 任何位置都畫出 spike
+        spikedistance=-1,
         hoverdistance=0,
         xaxis=dict(type="date", showspikes=True, spikemode="across", spikesnap="cursor",
-                   rangeslider=dict(visible=False), showline=True, ticks="outside"),
-        xaxis2=dict(showspikes=True, spikemode="across", spikesnap="cursor", showline=True, ticks="outside"),
-        xaxis3=dict(showspikes=True, spikemode="across", spikesnap="cursor", showline=True, ticks="outside"),
+                   rangebreaks=breaks, rangeslider=dict(visible=False), showline=True, ticks="outside"),
+        xaxis2=dict(showspikes=True, spikemode="across", spikesnap="cursor",
+                    rangebreaks=breaks, showline=True, ticks="outside"),
+        xaxis3=dict(showspikes=True, spikemode="across", spikesnap="cursor",
+                    rangebreaks=breaks, showline=True, ticks="outside"),
     )
     fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor",
                      showline=True, ticks="outside", row=1, col=1)
@@ -151,6 +176,6 @@ def plot_candlestick_with_indicators(
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=1, col=1)
     fig.update_yaxes(showgrid=True, gridwidth=1, row=2, col=1)
-    fig.update_yaxes(showgrid=True, gridwidth=1, row=3, col=1, secondary_y=False)  # MACD 網格
-    fig.update_yaxes(showgrid=False, row=3, col=1, secondary_y=True)               # KDJ 無網格
+    fig.update_yaxes(showgrid=True, gridwidth=1, row=3, col=1, secondary_y=False)
+    fig.update_yaxes(showgrid=False, row=3, col=1, secondary_y=True)
     return fig
