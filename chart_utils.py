@@ -15,12 +15,10 @@ PLOTLY_TV_CONFIG = {
     "toImageButtonOptions": {"format": "png"},
 }
 
-# ---------- robust OHLC standardizer ----------
 def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
     x = df.copy()
-
     if not isinstance(x.index, pd.DatetimeIndex):
         for c in ["Date", "date", "Datetime", "datetime", "Time", "time"]:
             if c in x.columns:
@@ -31,20 +29,15 @@ def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
         x.index = pd.to_datetime(x.index, errors="coerce")
     if isinstance(x.index, pd.DatetimeIndex) and x.index.tz is not None:
         x.index = x.index.tz_convert(None)
-
     cols = {c.lower(): c for c in x.columns}
-    def pick(k: str): return cols.get(k.lower())
-    o, h, l, c = pick("open"), pick("high"), pick("low"), pick("close")
+    o, h, l, c = cols.get("open"), cols.get("high"), cols.get("low"), cols.get("close")
     if not all([o, h, l, c]):
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
-
     out = x[[o, h, l, c]].rename(columns={o:"Open", h:"High", l:"Low", c:"Close"})
     out = out.apply(pd.to_numeric, errors="coerce")
     out = out[~out.index.duplicated(keep="last")].sort_index()
-    out = out.dropna(how="any")
-    return out
+    return out.dropna(how="any")
 
-# ---------- 指標 ----------
 def _ma(df: pd.DataFrame) -> pd.DataFrame:
     y = df.copy()
     y["MA5"]  = y["Close"].rolling(5).mean()
@@ -73,15 +66,14 @@ def _kdj_j(df: pd.DataFrame, n=9, ks=3, ds=3) -> pd.Series:
     return (3*k - 2*d).rename("KDJ_J")
 
 def _rsi(close: pd.Series, n=14) -> pd.Series:
-    delta = close.diff()
-    up = delta.clip(lower=0.0)
-    down = -delta.clip(upper=0.0)
-    roll_up = up.ewm(alpha=1/n, adjust=False).mean()
-    roll_down = down.ewm(alpha=1/n, adjust=False).mean()
-    rs = roll_up / roll_down.replace(0, np.nan)
+    d = close.diff()
+    up = d.clip(lower=0.0)
+    down = -d.clip(upper=0.0)
+    ru = up.ewm(alpha=1/n, adjust=False).mean()
+    rd = down.ewm(alpha=1/n, adjust=False).mean()
+    rs = ru / rd.replace(0, np.nan)
     return (100 - 100/(1+rs)).rename("RSI")
 
-# ---------- 休市日/夜間移除 ----------
 def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]:
     if not isinstance(idx, pd.DatetimeIndex) or idx.empty:
         return []
@@ -93,24 +85,19 @@ def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]
     if len(weekday_non_trade) > 0:
         brks.append(dict(values=weekday_non_trade))
     if is_intraday:
-        # why: 台股 09:00~13:30；這裡保守用 09:00~14:00
-        brks.append(dict(pattern="hour", bounds=[14, 9]))
+        brks.append(dict(pattern="hour", bounds=[13.5, 9]))  # 13:30~09:00 不顯示
     return brks
 
-# ---------- 在分時資料上，於每日第一根插入 NaN 以阻斷跨日連線 ----------
 def _break_at_session_open(index: pd.DatetimeIndex, s: pd.Series) -> pd.Series:
-    # why: 防止 rangebreaks 壓縮後的跨日連線，造成「亂線」視覺
     if s is None or s.empty:
         return s
     day = pd.Series(index.normalize(), index=index)
-    prev_day = day.shift(1)
-    is_session_open = day.ne(prev_day)  # 每個交易日第一筆 True
-    is_session_open.iloc[0] = False     # 第一列不需要斷線
+    is_open = day.ne(day.shift(1))
+    is_open.iloc[0] = False
     out = s.copy()
-    out[is_session_open.to_numpy()] = np.nan
+    out[is_open.to_numpy()] = np.nan  # why: 切斷跨日連線
     return out
 
-# ---------- 主圖 ----------
 def plot_candlestick_with_indicators(
     df: pd.DataFrame,
     title: str = "",
@@ -121,7 +108,6 @@ def plot_candlestick_with_indicators(
     if data.empty:
         raise ValueError("Empty or invalid OHLC dataframe")
 
-    # 判斷分時
     is_intraday = False
     if len(data) > 2:
         step = data.index.to_series().diff().dt.total_seconds().median()
@@ -134,22 +120,19 @@ def plot_candlestick_with_indicators(
     rsi    = _rsi(data["Close"])
     breaks = _compute_rangebreaks(data.index, is_intraday)
 
-    # --- 只在分時把線在「日切」處斷開 ---
     if is_intraday:
         for col in ["MA5", "MA10", "MA20"]:
             data[col] = _break_at_session_open(data.index, data[col])
         for col in ["BB_MID", "BB_UPPER", "BB_LOWER"]:
             bb[col] = _break_at_session_open(bb.index, bb[col])
-        rsi  = _break_at_session_open(rsi.index, rsi)
+        rsi   = _break_at_session_open(rsi.index, rsi)
         kdj_j = _break_at_session_open(kdj_j.index, kdj_j)
-        # K 線不斷；只處理線型指標避免跨日斜接
 
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
         row_heights=[0.56, 0.18, 0.26], specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
-    # Row 1: K + MA + BB（連續實線；BB 半透明實線）
     fig.add_trace(go.Candlestick(
         x=data.index, open=data["Open"], high=data["High"], low=data["Low"], close=data["Close"],
         name="Price", increasing_line_width=1, decreasing_line_width=1
@@ -158,39 +141,42 @@ def plot_candlestick_with_indicators(
     for name in ["MA5", "MA10", "MA20"]:
         fig.add_trace(go.Scatter(
             x=data.index, y=data[name], name=name,
-            mode="lines", connectgaps=False, line=dict(width=2)  # why: 斷點處不要自動連線
+            mode="lines", connectgaps=False,
+            line=dict(width=2, dash="solid")
         ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
         x=bb.index, y=bb["BB_MID"], name="BB20",
-        mode="lines", connectgaps=False, line=dict(width=1.6), opacity=0.55
+        mode="lines", connectgaps=False,
+        line=dict(width=1.6, dash="solid"), opacity=0.55
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=bb.index, y=bb["BB_UPPER"], name="+2σ",
-        mode="lines", connectgaps=False, line=dict(width=1.6), opacity=0.35
+        mode="lines", connectgaps=False,
+        line=dict(width=1.6, dash="solid"), opacity=0.35
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=bb.index, y=bb["BB_LOWER"], name="-2σ",
-        mode="lines", connectgaps=False, line=dict(width=1.6), opacity=0.35
+        mode="lines", connectgaps=False,
+        line=dict(width=1.6, dash="solid"), opacity=0.35
     ), row=1, col=1)
 
-    # Row 2: RSI（連續實線）
     fig.add_trace(go.Scatter(
         x=rsi.index, y=rsi, name="RSI(14)",
-        mode="lines", connectgaps=False, line=dict(width=2)
+        mode="lines", connectgaps=False,
+        line=dict(width=2, dash="solid")
     ), row=2, col=1)
     fig.add_hline(y=70, line_dash="dot", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", row=2, col=1)
 
-    # Row 3: MACD 柱體 + KDJ J（J 連續實線）
     fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.85),
                   row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(
         x=kdj_j.index, y=kdj_j, name="KDJ J",
-        mode="lines", connectgaps=False, line=dict(width=2.2)
+        mode="lines", connectgaps=False,
+        line=dict(width=2.2, dash="solid")
     ), row=3, col=1, secondary_y=True)
 
-    # ---- 互動（跨三圖日期線 + 日期格式）----
     fig.update_layout(
         title=title, height=height, dragmode="pan",
         hovermode="x unified",
@@ -198,21 +184,16 @@ def plot_candlestick_with_indicators(
         uirevision=uirevision_key,
         margin=dict(l=10, r=10, t=40, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        spikedistance=-1,
-        hoverdistance=100,
+        spikedistance=-1, hoverdistance=100,
         xaxis =dict(type="date", rangebreaks=breaks, rangeslider=dict(visible=False), showline=True, ticks="outside"),
         xaxis2=dict(type="date", rangebreaks=breaks, showline=True, ticks="outside"),
         xaxis3=dict(type="date", rangebreaks=breaks, showline=True, ticks="outside"),
     )
     for ax in ("xaxis", "xaxis2", "xaxis3"):
         fig.layout[ax].update(
-            showspikes=True,
-            spikemode="across+toaxis+marker",
-            spikesnap="cursor",
-            spikethickness=1.5,
-            spikedash="dot",
-            spikecolor="black",
-            hoverformat="%Y/%m/%d",
+            showspikes=True, spikemode="across+toaxis+marker",
+            spikesnap="cursor", spikethickness=1.5, spikedash="dot",
+            spikecolor="black", hoverformat="%Y/%m/%d",
         )
 
     fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor",
