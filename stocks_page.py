@@ -1,12 +1,12 @@
 # =========================================
 # /mnt/data/stocks_page.py
-# 只保留日K；主圖加布林；副圖 MACD 柱體 + KDJ(J)
+# 60m/日 K 切換；主圖含 BB；中圖 RSI；下圖 MACD 柱體 + KDJ(J)
 # 嚴格分流（只允許個股）；KPI 區完整；相容 app.py 的 show()
 # =========================================
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -19,12 +19,28 @@ from risk_grading import (
     grade_debt_equity, grade_current_ratio, grade_roe, summarize,
 )
 
+# ---------- 格式 ----------
 def _fmt2(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:.2f}"
 def _fmt2pct(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x*100:.2f}%"
 def _fmt0(x: Optional[float]) -> str:
     return "—" if x is None or (isinstance(x, float) and (math.isnan(x))) else f"{x:,.0f}"
+
+# ---------- 市場 / 價格 ----------
+def _normalize_tw_ticker_once(sym: str) -> str:
+    s = str(sym).upper().strip()
+    return s if s.endswith((".TW", ".TWO")) or s.startswith("^") else f"{s}.TW"
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _download_ohlc_intraday(ticker: str, interval: str = "60m", period: str = "90d") -> pd.DataFrame:
+    try:
+        df = yf.Ticker(_normalize_tw_ticker_once(ticker)).history(period=period, interval=interval)
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        return df[["Open", "High", "Low", "Close"]].dropna(how="any")
+    except Exception:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _get_market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional[pd.Series]:
@@ -37,6 +53,12 @@ def _get_market_close_series(start: pd.Timestamp, end: pd.Timestamp) -> Optional
             continue
     return None
 
+def _prepare_tf_df(ticker: str, base_daily_df: pd.DataFrame, tf_label: str) -> Tuple[pd.DataFrame, str]:
+    if tf_label == "60m":
+        return _download_ohlc_intraday(ticker, "60m", "90d"), "（60 分鐘）"
+    else:
+        return base_daily_df.copy(), "（日 K）"
+
 def _kpi_grid(metrics: list[tuple[str, str, str]], cols: int = 5) -> None:
     if not metrics: return
     rows = (len(metrics) + cols - 1) // cols
@@ -48,10 +70,16 @@ def _kpi_grid(metrics: list[tuple[str, str, str]], cols: int = 5) -> None:
             except StopIteration: break
             with c: st.metric(label=name, value=val, help=hp or None)
 
+# ---------- 主頁面 ----------
 def render(prefill_symbol: Optional[str] = None) -> None:
     st.header("股票")
-    default_kw = prefill_symbol or st.session_state.get("last_stock_kw", "2330")
-    keyword = st.text_input("輸入股票代碼或名稱", value=default_kw)
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        default_kw = prefill_symbol or st.session_state.get("last_stock_kw", "2330")
+        keyword = st.text_input("輸入股票代碼或名稱", value=default_kw)
+    with c2:
+        tf_label = st.radio("K 線週期", options=["60m", "日"], index=1, horizontal=True)
+
     if not keyword:
         st.info("請輸入關鍵字（例：2330 或 台積電）"); return
     try:
@@ -102,8 +130,12 @@ def render(prefill_symbol: Optional[str] = None) -> None:
 
         base_df: pd.DataFrame = stats["df"].copy()
         if not isinstance(base_df.index, pd.DatetimeIndex): base_df.index = pd.to_datetime(base_df.index)
-        title = f"{name or ticker}（{ticker}）技術圖（日 K）"
-        fig = plot_candlestick_with_indicators(base_df, title=title, uirevision_key=f"{ticker}_D")
+        tf_df, tf_note = _prepare_tf_df(ticker, base_df, tf_label)
+        if tf_df.empty:
+            st.error("查無對應週期的價格資料。"); return
+
+        title = f"{name or ticker}（{ticker}）技術圖 {tf_note}"
+        fig = plot_candlestick_with_indicators(tf_df, title=title, uirevision_key=f"{ticker}_{tf_label}")
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_TV_CONFIG)
     except Exception as e:
         st.error(f"❌ 查詢股票失敗：{e}")
