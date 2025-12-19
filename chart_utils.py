@@ -1,10 +1,10 @@
-# =========================================
+# ================================
 # /mnt/data/chart_utils.py
-# K + MA5/10/20 + BB20±2 ；RSI(14)；MACD Hist + KDJ J
-# 統一日期線；移除休市日/假日；60m 移除夜間
-# =========================================
+# K + MA5/10/20 + BB20±2；RSI(14)；MACD 柱體 + KDJ-J
+# 統一日期線、移除休市日/假日、60m 移除夜間
+# ================================
 from __future__ import annotations
-from typing import Optional, Iterable
+from typing import Optional
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -17,58 +17,43 @@ PLOTLY_TV_CONFIG = {
     "toImageButtonOptions": {"format": "png"},
 }
 
-# ---------- robust OHLC standardizer ----------
+# --- 統一化 OHLC（關鍵修復：避免圖表空白） ---
 def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
-    """標準化成帶 DatetimeIndex 的 OHLC；解決欄名大小寫/Date 欄/時區/排序等問題。"""
+    """將輸入資料清洗成帶 DatetimeIndex 的 OHLC。
+    為什麼：來源欄位大小寫/日期欄/時區常不一致，會讓 Plotly 的 x 軸失效。"""
     if df is None or df.empty:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
-    tmp = df.copy()
+    x = df.copy()
 
-    # 1) 取日期索引
-    if not isinstance(tmp.index, pd.DatetimeIndex):
-        # 常見情況：有 Date/Datetime 欄
+    # 1) 取得日期索引
+    if not isinstance(x.index, pd.DatetimeIndex):
         for c in ["Date", "date", "Datetime", "datetime", "Time", "time"]:
-            if c in tmp.columns:
-                tmp[c] = pd.to_datetime(tmp[c], errors="coerce")
-                tmp = tmp.set_index(c)
+            if c in x.columns:
+                x[c] = pd.to_datetime(x[c], errors="coerce")
+                x = x.set_index(c)
                 break
-    if not isinstance(tmp.index, pd.DatetimeIndex):
-        try:
-            tmp.index = pd.to_datetime(tmp.index, errors="coerce")
-        except Exception:
-            pass
+    if not isinstance(x.index, pd.DatetimeIndex):
+        x.index = pd.to_datetime(x.index, errors="coerce")
 
-    # 2) 去時區（為了 yfinance 與 Plotly）
-    if isinstance(tmp.index, pd.DatetimeIndex):
-        if tmp.index.tz is not None:
-            tmp.index = tmp.index.tz_convert(None)
-        else:
-            # 有些來源混入 tz-aware 值，保守處理
-            tmp.index = pd.to_datetime(tmp.index, utc=False)
+    # 2) 去除時區（Plotly 與 yfinance 比較穩）
+    if isinstance(x.index, pd.DatetimeIndex) and x.index.tz is not None:
+        x.index = x.index.tz_convert(None)
 
-    # 3) 欄名標準化
-    cols = {c.lower(): c for c in tmp.columns}
-    def pick(name: str) -> Optional[str]:
-        return cols.get(name.lower())
-
-    o = pick("Open") or pick("open")
-    h = pick("High") or pick("high")
-    l = pick("Low") or pick("low")
-    c = pick("Close") or pick("close")
+    # 3) 對齊欄名
+    cols = {c.lower(): c for c in x.columns}
+    def pick(name: str) -> str | None: return cols.get(name.lower())
+    o, h, l, c = pick("open"), pick("high"), pick("low"), pick("close")
     if not all([o, h, l, c]):
-        # 無法對應，回傳空
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
-    out = tmp[[o, h, l, c]].rename(columns={o: "Open", h: "High", l: "Low", c: "Close"})
+    x = x[[o, h, l, c]].rename(columns={o: "Open", h: "High", l: "Low", c: "Close"})
+    x = x.apply(pd.to_numeric, errors="coerce")
+    x = x[~x.index.duplicated(keep="last")].sort_index()
+    x = x.dropna(how="any")
+    return x
 
-    # 4) 數值轉型、排序、去重、去 NA
-    out = out.apply(pd.to_numeric, errors="coerce")
-    out = out[~out.index.duplicated(keep="last")].sort_index()
-    out = out.dropna(how="any")
-    return out
-
-# ---------- 指標 ----------
+# --- 指標 ---
 def _ma(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["MA5"] = out["Close"].rolling(5).mean()
@@ -86,8 +71,7 @@ def _macd_hist(s: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) ->
     ema_s = s.ewm(span=slow, adjust=False).mean()
     macd = ema_f - ema_s
     sig = macd.ewm(span=signal, adjust=False).mean()
-    out = macd - sig
-    out.name = "MACD_HIST"
+    out = (macd - sig).rename("MACD_HIST")
     return out
 
 def _kdj_j(df: pd.DataFrame, n: int = 9, ks: int = 3, ds: int = 3) -> pd.Series:
@@ -96,9 +80,7 @@ def _kdj_j(df: pd.DataFrame, n: int = 9, ks: int = 3, ds: int = 3) -> pd.Series:
     rsv = (df["Close"] - low_n) / (high_n - low_n).replace(0, np.nan) * 100.0
     k = rsv.rolling(ks).mean()
     d = k.rolling(ds).mean()
-    j = 3 * k - 2 * d
-    j.name = "KDJ_J"
-    return j
+    return (3 * k - 2 * d).rename("KDJ_J")
 
 def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     delta = close.diff()
@@ -107,27 +89,24 @@ def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     roll_up = up.ewm(alpha=1 / n, adjust=False).mean()
     roll_down = down.ewm(alpha=1 / n, adjust=False).mean()
     rs = roll_up / roll_down.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    rsi.name = "RSI"
-    return rsi
+    return (100 - 100 / (1 + rs)).rename("RSI")
 
-# ---------- 休市日/夜間移除 ----------
+# --- 休市日/夜間隱藏 ---
 def _compute_rangebreaks(idx: pd.DatetimeIndex, is_intraday: bool) -> list[dict]:
     if not isinstance(idx, pd.DatetimeIndex) or idx.empty:
         return []
     breaks = [dict(bounds=["sat", "mon"])]
-    # 假日：工作日但沒有資料
     all_days = pd.date_range(idx.min().normalize(), idx.max().normalize(), freq="D")
     trade_days = pd.DatetimeIndex(pd.to_datetime(idx.date)).unique()
-    non_trade = all_days.difference(trade_days)
-    weekday_non_trade = non_trade[non_trade.weekday < 5]
+    weekday_non_trade = all_days.difference(trade_days)
+    weekday_non_trade = weekday_non_trade[weekday_non_trade.weekday < 5]
     if len(weekday_non_trade) > 0:
         breaks.append(dict(values=weekday_non_trade))
     if is_intraday:
-        breaks.append(dict(pattern="hour", bounds=[14, 9]))  # 台股夜間
+        breaks.append(dict(pattern="hour", bounds=[14, 9]))  # 台股非盤時間
     return breaks
 
-# ---------- 主圖 ----------
+# --- 主圖 ---
 def plot_candlestick_with_indicators(
     df: pd.DataFrame,
     title: str = "",
@@ -138,7 +117,7 @@ def plot_candlestick_with_indicators(
     if data.empty:
         raise ValueError("Empty or invalid OHLC dataframe")
 
-    # 60m 粗判斷
+    # 判斷是否為 60m 內頻
     is_intraday = False
     if len(data) > 2:
         step = data.index.to_series().diff().dt.total_seconds().median()
@@ -149,7 +128,6 @@ def plot_candlestick_with_indicators(
     macd_h = _macd_hist(data["Close"])
     kdj_j = _kdj_j(data)
     rsi = _rsi(data["Close"])
-
     breaks = _compute_rangebreaks(data.index, is_intraday=is_intraday)
 
     fig = make_subplots(
@@ -169,23 +147,22 @@ def plot_candlestick_with_indicators(
     fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_UPPER"], name="+2σ", line=dict(dash="dot")), row=1, col=1)
     fig.add_trace(go.Scatter(x=bb.index, y=bb["BB_LOWER"], name="-2σ", line=dict(dash="dot")), row=1, col=1)
 
-    # Row2：RSI
+    # Row2
     fig.add_trace(go.Scatter(x=rsi.index, y=rsi, name="RSI(14)"), row=2, col=1)
     fig.add_hline(y=70, line_dash="dot", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", row=2, col=1)
 
-    # Row3：MACD Hist + KDJ J
+    # Row3
     fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.75),
                   row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=kdj_j.index, y=kdj_j, name="KDJ J", mode="lines"),
                   row=3, col=1, secondary_y=True)
 
-    # 互動/外觀
     fig.update_layout(
         title=title, height=height, dragmode="pan",
         hovermode="x unified", uirevision=uirevision_key,
         margin=dict(l=10, r=10, t=40, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        legend=dict(orientation="h", y=1.02, x=1, xanchor="right", yanchor="bottom"),
         spikedistance=-1, hoverdistance=0,
         xaxis=dict(type="date", showspikes=True, spikemode="across", spikesnap="cursor",
                    rangebreaks=breaks, rangeslider=dict(visible=False), showline=True, ticks="outside"),
