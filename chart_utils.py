@@ -1,22 +1,17 @@
 # =========================================
-# /mnt/data/chart_utils.py
+# /mnt/data/chart_utils.py  （覆蓋本檔；其它檔不用改）
 # =========================================
 from __future__ import annotations
-from typing import Optional, Dict, List, Tuple
+from typing import Optional
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 互動設定（保留全螢幕、滾輪縮放、拿掉框選等）
 PLOTLY_TV_CONFIG = {
     "scrollZoom": True,
     "displaylogo": False,
-    "modeBarButtonsToRemove": [
-        "lasso2d", "select2d", "autoScale2d", "toggleSpikelines",
-        "zoom2d", "zoomIn2d", "zoomOut2d", "resetScale2d", "pan2d"
-    ],
-    "modeBarButtonsToAdd": ["toggleFullscreen"],
+    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],
     "toImageButtonOptions": {"format": "png"},
 }
 
@@ -40,16 +35,15 @@ def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     if isinstance(x.index, pd.DatetimeIndex) and x.index.tz is not None:
         x.index = x.index.tz_convert(None)
 
-    x = x[~x.index.duplicated(keep="last")].sort_index()
-
     cols = {c.lower(): c for c in x.columns}
-    def pick(k: str): return cols.get(k.lower())
+    def pick(k: str) -> Optional[str]: return cols.get(k.lower())
     o, h, l, c = pick("open"), pick("high"), pick("low"), pick("close")
     if not all([o, h, l, c]):
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
 
     out = x[[o, h, l, c]].rename(columns={o:"Open", h:"High", l:"Low", c:"Close"})
     out = out.apply(pd.to_numeric, errors="coerce")
+    out = out[~out.index.duplicated(keep="last")].sort_index()
     return out.dropna(how="any")
 
 # ---------- 指標 ----------
@@ -89,98 +83,14 @@ def _rsi(close: pd.Series, n=14) -> pd.Series:
     rs = roll_up / roll_down.replace(0, np.nan)
     return (100 - 100/(1+rs)).rename("RSI")
 
-# ---------- RSI 背離偵測（多/空/二度） ----------
-def detect_rsi_divergence(
-    df: pd.DataFrame,
-    rsi_period: int = 14,
-    window: int = 2,           # 標記局部高低點用（左右各 window 根）
-    min_separation: int = 5,   # 兩個枢紐點至少間隔 K 根
-    lookback: int = 250,       # 回看長度
-) -> Dict[str, object]:
-    """
-    回傳：
-      {
-        "bullish": True/False,          # 多頭背離（低點）
-        "bearish": True/False,          # 空頭背離（高點）
-        "bullish_double": True/False,   # 二度多頭背離
-        "bearish_double": True/False,   # 二度空頭背離
-        "points": {
-            "bullish": [(x0,y0),(x1,y1)],  # 供畫線/箭頭用（RSI 子圖）
-            "bearish": [(x0,y0),(x1,y1)]
-        }
-      }
-    """
-    data = _ensure_ohlc(df)
-    if data.empty:
-        return {"bullish": False, "bearish": False, "bullish_double": False, "bearish_double": False, "points": {}}
-
-    data = data.tail(lookback).copy()
-    rsi = _rsi(data["Close"], n=rsi_period)
-    c = data["Close"]
-
-    def pivots(series: pd.Series, is_low: bool) -> List[int]:
-        s = series.values
-        idxs: List[int] = []
-        for i in range(window, len(s)-window):
-            seg = s[i-window:i+window+1]
-            if is_low and s[i] == float(np.nanmin(seg)):
-                idxs.append(i)
-            if (not is_low) and s[i] == float(np.nanmax(seg)):
-                idxs.append(i)
-        # 合併太近的點（僅保留靠後者）
-        filtered: List[int] = []
-        for i in idxs:
-            if not filtered or (i - filtered[-1]) >= min_separation:
-                filtered.append(i)
-            else:
-                filtered[-1] = i
-        return filtered
-
-    lows  = pivots(c, True)
-    highs = pivots(c, False)
-
-    def check(piv_idx: List[int], kind: str) -> Tuple[bool, bool, List[Tuple[pd.Timestamp,float]] | None]:
-        single = False; double = False; pts = None
-        if len(piv_idx) >= 2:
-            p2, p1 = piv_idx[-2], piv_idx[-1]
-            if kind == "bull":
-                single = (c.iloc[p1] < c.iloc[p2]) and (rsi.iloc[p1] > rsi.iloc[p2])
-            else:
-                single = (c.iloc[p1] > c.iloc[p2]) and (rsi.iloc[p1] < rsi.iloc[p2])
-            if single:
-                pts = [(data.index[p2], float(rsi.iloc[p2])), (data.index[p1], float(rsi.iloc[p1]))]
-        if len(piv_idx) >= 3:
-            p3, p2, p1 = piv_idx[-3], piv_idx[-2], piv_idx[-1]
-            if kind == "bull":
-                double = ((c.iloc[p2] < c.iloc[p3]) and (rsi.iloc[p2] > rsi.iloc[p3]) and
-                          (c.iloc[p1] < c.iloc[p2]) and (rsi.iloc[p1] > rsi.iloc[p2]))
-            else:
-                double = ((c.iloc[p2] > c.iloc[p3]) and (rsi.iloc[p2] < rsi.iloc[p3]) and
-                          (c.iloc[p1] > c.iloc[p2]) and (rsi.iloc[p1] < rsi.iloc[p2]))
-        return single, double, pts
-
-    bul_s, bul_d, bul_pts = check(lows, "bull")
-    ber_s, ber_d, ber_pts = check(highs, "bear")
-
-    points = {}
-    if bul_s and bul_pts: points["bullish"] = bul_pts
-    if ber_s and ber_pts: points["bearish"] = ber_pts
-
-    return {
-        "bullish": bul_s, "bearish": ber_s,
-        "bullish_double": bul_d, "bearish_double": ber_d,
-        "points": points,
-    }
-
 # ---------- 主圖 ----------
 def plot_candlestick_with_indicators(
     df: pd.DataFrame,
-    *,
     title: str = "",
     height: int = 820,
     uirevision_key: Optional[str] = "tv_like",
 ) -> go.Figure:
-    """日K：K棒 + MA5/10/20 + BB(20,2σ) + RSI + MACD Hist + KDJ J。"""
+    """日K：K棒 + MA5/10/20 + BB(20,2σ) + RSI + MACD Hist + KDJ J（全部連續實線；BB 半透明實線）"""
     data = _ensure_ohlc(df)
     if data.empty:
         raise ValueError("Empty or invalid OHLC dataframe")
@@ -196,7 +106,7 @@ def plot_candlestick_with_indicators(
         row_heights=[0.56, 0.18, 0.26], specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
-    # Row 1: K + MA + BB
+    # Row 1: K + MA + BB（全部「連續實線」）
     fig.add_trace(go.Candlestick(
         x=data.index, open=data["Open"], high=data["High"], low=data["Low"], close=data["Close"],
         name="Price", increasing_line_width=1, decreasing_line_width=1
@@ -221,7 +131,7 @@ def plot_candlestick_with_indicators(
         mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.35
     ), row=1, col=1)
 
-    # Row 2: RSI（+ 80/20 線）
+    # Row 2: RSI（實線 + 70/30 也改為實線）
     fig.add_trace(go.Scatter(
         x=rsi.index, y=rsi, name="RSI(14)",
         mode="lines", connectgaps=True, line=dict(width=2, dash="solid")
@@ -229,38 +139,7 @@ def plot_candlestick_with_indicators(
     fig.add_hline(y=80, line_dash="solid", row=2, col=1)
     fig.add_hline(y=20, line_dash="solid", row=2, col=1)
 
-    # === a) RSI 背離可視化：連線＋箭頭標註（多頭▲、空頭▼） ===
-    try:
-        _div = detect_rsi_divergence(data)
-        pts = _div.get("points", {})
-        # 多頭：連線 + ▲ + label
-        if "bullish" in pts:
-            xs = [pts["bullish"][0][0], pts["bullish"][1][0]]
-            ys = [pts["bullish"][0][1], pts["bullish"][1][1]]
-            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines",
-                                     line=dict(width=1), name="BullDiv", showlegend=False),
-                          row=2, col=1)
-            fig.add_trace(go.Scatter(x=[xs[-1]], y=[ys[-1]], mode="markers+text",
-                                     marker_symbol="triangle-up", marker_size=10,
-                                     text=["多頭背離"], textposition="bottom center",
-                                     name="BullDiv", showlegend=False),
-                          row=2, col=1)
-        # 空頭：連線 + ▼ + label
-        if "bearish" in pts:
-            xs = [pts["bearish"][0][0], pts["bearish"][1][0]]
-            ys = [pts["bearish"][0][1], pts["bearish"][1][1]]
-            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines",
-                                     line=dict(width=1), name="BearDiv", showlegend=False),
-                          row=2, col=1)
-            fig.add_trace(go.Scatter(x=[xs[-1]], y=[ys[-1]], mode="markers+text",
-                                     marker_symbol="triangle-down", marker_size=10,
-                                     text=["空頭背離"], textposition="top center",
-                                     name="BearDiv", showlegend=False),
-                          row=2, col=1)
-    except Exception:
-        pass
-
-    # Row 3: MACD 柱體 + KDJ J
+    # Row 3: MACD 柱體 + KDJ J（J 為連續實線）
     fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.85),
                   row=3, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(
@@ -268,7 +147,7 @@ def plot_candlestick_with_indicators(
         mode="lines", connectgaps=True, line=dict(width=2.2, dash="solid")
     ), row=3, col=1, secondary_y=True)
 
-    # 互動 / 座標軸
+    # 互動：三圖共用日期線；日期線也為「實線」
     rangebreaks = [dict(bounds=["sat", "mon"])]
     fig.update_layout(
         title=title, height=height, dragmode="pan",
@@ -284,7 +163,7 @@ def plot_candlestick_with_indicators(
     for ax in ("xaxis", "xaxis2", "xaxis3"):
         fig.layout[ax].update(
             showspikes=True, spikemode="across+toaxis+marker",
-            spikesnap="cursor", spikethickness=1.5, spikedash="solid",
+            spikesnap="cursor", spikethickness=1.5, spikedash="solid",  # 日期線 → 實線
             spikecolor="black", hoverformat="%Y/%m/%d",
         )
 
@@ -301,3 +180,4 @@ def plot_candlestick_with_indicators(
     fig.update_yaxes(showgrid=True, gridwidth=1, row=3, col=1, secondary_y=False)
     fig.update_yaxes(showgrid=False, row=3, col=1, secondary_y=True)
     return fig
+

@@ -10,12 +10,7 @@ import yfinance as yf
 from risk_grading import grade_alpha, grade_sharpe, grade_treynor, summarize
 from portfolio_risk_utils import diversification_warning
 from stock_utils import find_ticker_by_name, get_metrics, is_etf, TICKER_NAME_MAP
-from chart_utils import (
-    plot_candlestick_with_indicators,
-    PLOTLY_TV_CONFIG,
-    _ensure_ohlc,
-    detect_rsi_divergence,   # ← 新增
-)
+from chart_utils import plot_candlestick_with_indicators, PLOTLY_TV_CONFIG, _ensure_ohlc
 from watchlist_page import add_to_watchlist
 
 
