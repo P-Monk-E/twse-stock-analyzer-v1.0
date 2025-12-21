@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from typing import Optional, Iterable, Sequence
 import numpy as np
@@ -16,7 +15,7 @@ PLOTLY_TV_CONFIG = {
 # ---------- robust OHLC standardizer ----------
 def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
-        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close'])
     x = df.copy()
 
     # 確保 DatetimeIndex
@@ -77,14 +76,20 @@ def _kdj_j(df: pd.DataFrame, n=9, ks=3, ds=3) -> pd.Series:
     d = k.rolling(ds).mean()
     return (3*k - 2*d).rename("KDJ_J")
 
-def _rsi(close: pd.Series, n=14) -> pd.Series:
+def _rsi_series(close: pd.Series, n=14) -> pd.Series:
     delta = close.diff()
     up = delta.clip(lower=0.0)
     down = -delta.clip(upper=0.0)
     roll_up = up.ewm(alpha=1/n, adjust=False).mean()
     roll_down = down.ewm(alpha=1/n, adjust=False).mean()
     rs = roll_up / roll_down.replace(0, np.nan)
-    return (100 - 100/(1+rs)).rename("RSI")
+    return (100 - 100/(1+rs)).rename(f"RSI{n}")
+
+def _rsi(df: pd.DataFrame, periods: Sequence[int]) -> pd.DataFrame:
+    out = pd.DataFrame(index=df.index)
+    for n in periods:
+        out[f"RSI{int(n)}"] = _rsi_series(df["Close"], int(n))
+    return out
 
 def _infer_holiday_gaps(index: pd.DatetimeIndex) -> list:
     """找出資料區間內「缺少的平日」（當作休市日）以供 Plotly rangebreaks 隱藏。"""
@@ -108,20 +113,19 @@ def plot_candlestick_with_indicators(
     show_ma: Sequence[int] | bool = (5,10,20,60,200),
     show_ema: Sequence[int] | bool = (5,10,30),
     show_bb: bool = True,
-    show_rsi: bool = True,
+    show_rsi: Sequence[int] | bool = (5,10),  # 改為支援多週期，預設 5、10 日
     show_macd: bool = True,
     show_kdj: bool = True,
     # 市場休市/週末處理
     skip_holidays: bool = True,
-    hide_weekends: Optional[bool] = None,  # None => 自動偵測（含週末交易的市場如 Crypto 則不隱藏）
+    hide_weekends: Optional[bool] = None,  # None => 自動偵測（含週末交易則不隱藏）
 ) -> go.Figure:
     data = _ensure_ohlc(df)
     if data.empty:
         raise ValueError("Empty or invalid OHLC dataframe")
 
-    # --- 自動判斷是否隱藏週末 ---
+    # --- 自動判斷是否隱藏週末（日線）---
     if hide_weekends is None:
-        # 如果資料中出現週六/週日，視為 7x24 市場（例如加密貨幣），不隱藏週末
         weekdays = data.index.weekday  # 0=Mon ... 6=Sun
         has_weekend_rows = np.any((weekdays == 5) | (weekdays == 6))
         hide_weekends = not has_weekend_rows
@@ -131,8 +135,12 @@ def plot_candlestick_with_indicators(
     data_ema = _ema(data)  # 內含 EMA5/10/30
     bb = _bb(data)
     macd_h = _macd_hist(data["Close"])
+    # RSI 支援多週期（預設 5、10）
+    rsi_periods: Iterable[int] = ()
+    if show_rsi:
+        rsi_periods = show_rsi if not isinstance(show_rsi, bool) else (5,10)
+    rsi_df = _rsi(data, rsi_periods) if rsi_periods else pd.DataFrame(index=data.index)
     kdj_j  = _kdj_j(data)
-    rsi    = _rsi(data["Close"])
 
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
@@ -182,14 +190,19 @@ def plot_candlestick_with_indicators(
             mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.35
         ), row=1, col=1)
 
-    # Row 2: RSI
-    if show_rsi:
-        fig.add_trace(go.Scatter(
-            x=rsi.index, y=rsi, name="RSI(14)",
-            mode="lines", connectgaps=True, line=dict(width=2, dash="solid")
-        ), row=2, col=1)
+    # Row 2: RSI（支援多條 RSI）
+    if rsi_periods:
+        for n in rsi_periods:
+            col = f"RSI{int(n)}"
+            fig.add_trace(go.Scatter(
+                x=rsi_df.index, y=rsi_df[col], name=col,
+                mode="lines", connectgaps=True, line=dict(width=2, dash="solid"),
+            ), row=2, col=1)
         fig.add_hline(y=80, line_dash="solid", row=2, col=1)
         fig.add_hline(y=20, line_dash="solid", row=2, col=1)
+        fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
+    else:
+        fig.update_yaxes(visible=False, row=2, col=1)
 
     # Row 3: MACD Hist + KDJ J
     if show_macd:
@@ -198,7 +211,7 @@ def plot_candlestick_with_indicators(
     if show_kdj:
         fig.add_trace(go.Scatter(
             x=kdj_j.index, y=kdj_j, name="KDJ J",
-            mode="lines", connectgaps=True, line=dict(width=2.2, dash="solid")
+            mode="lines", connectgaps=True, line=dict(width=2.2, dash="solid"),
         ), row=3, col=1, secondary_y=True)
 
     # 互動：三圖共用日期線
@@ -206,7 +219,7 @@ def plot_candlestick_with_indicators(
     if hide_weekends:
         rangebreaks.append(dict(bounds=["sat", "mon"]))  # 週末隱藏
     if skip_holidays and hide_weekends:
-        # 僅在隱藏週末時推斷「缺少的平日」為休市日；對 7x24 市場不做推斷
+        # 僅在隱藏週末時推斷「缺少的平日」為休市日（因為日線/股票市場）
         holiday_values = _infer_holiday_gaps(data.index)
         if holiday_values:
             rangebreaks.append(dict(values=holiday_values))
@@ -232,10 +245,6 @@ def plot_candlestick_with_indicators(
     # y 軸與網格
     fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor",
                      showline=True, ticks="outside", row=1, col=1)
-    if show_rsi:
-        fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
-    else:
-        fig.update_yaxes(visible=False, row=2, col=1)
 
     if show_macd:
         fig.update_yaxes(title_text="MACD", zeroline=True, row=3, col=1, secondary_y=False)
