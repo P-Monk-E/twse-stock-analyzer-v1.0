@@ -90,15 +90,12 @@ def _infer_holiday_gaps(index: pd.DatetimeIndex) -> list:
     """找出資料區間內「缺少的平日」（當作休市日）以供 Plotly rangebreaks 隱藏。"""
     if len(index) == 0:
         return []
-    # 只處理「日線」：normalize 成日期，避免跨時區與時分秒
     d0 = index.min().normalize()
     d1 = index.max().normalize()
     # 只保留週一~週五
     all_weekdays = pd.date_range(d0, d1, freq="B")  # business days (Mon-Fri)
     have_days = pd.to_datetime(pd.Index(index.normalize().unique())).sort_values()
-    # 缺少的平日 = 休市日（例如國定假日）
     missing = all_weekdays.difference(have_days)
-    # 回傳字串清單，Plotly rangebreaks.values 支援字串或 datetime
     return [pd.Timestamp(d).strftime("%Y-%m-%d") for d in missing]
 
 # ---------- 主圖 ----------
@@ -107,26 +104,29 @@ def plot_candlestick_with_indicators(
     title: str = "",
     height: int = 820,
     uirevision_key: Optional[str] = "tv_like",
-    # 新增：各指標顯示開關（可傳入 tuple/list 選擇要畫哪些週期）
+    # 指標顯示開關
     show_ma: Sequence[int] | bool = (5,10,20,60,200),
     show_ema: Sequence[int] | bool = (5,10,30),
     show_bb: bool = True,
     show_rsi: bool = True,
     show_macd: bool = True,
     show_kdj: bool = True,
-    # 新增：是否跳過（隱藏）休市日（平日但無資料）
+    # 市場休市/週末處理
     skip_holidays: bool = True,
+    hide_weekends: Optional[bool] = None,  # None => 自動偵測（含週末交易的市場如 Crypto 則不隱藏）
 ) -> go.Figure:
-    """
-    日K：K棒 + MA/EMA(可選) + BB(20,2σ,可選) + RSI(可選) + MACD Hist(可選) + KDJ J(可選)
-    - 休市日（平日但沒交易）會被自動偵測並隱藏，週末亦隱藏。
-    - 所有線條皆連續實線；BB 上下軌半透明。
-    """
     data = _ensure_ohlc(df)
     if data.empty:
         raise ValueError("Empty or invalid OHLC dataframe")
 
-    # 計算所有可能用到的指標，後面依旗標決定是否畫出
+    # --- 自動判斷是否隱藏週末 ---
+    if hide_weekends is None:
+        # 如果資料中出現週六/週日，視為 7x24 市場（例如加密貨幣），不隱藏週末
+        weekdays = data.index.weekday  # 0=Mon ... 6=Sun
+        has_weekend_rows = np.any((weekdays == 5) | (weekdays == 6))
+        hide_weekends = not has_weekend_rows
+
+    # 計算所有可能用到的指標
     data_ma = _ma(data)  # 內含 MA5/10/20/60/200
     data_ema = _ema(data)  # 內含 EMA5/10/30
     bb = _bb(data)
@@ -139,13 +139,13 @@ def plot_candlestick_with_indicators(
         row_heights=[0.56, 0.18, 0.26], specs=[[{}], [{}], [{"secondary_y": True}]],
     )
 
-    # Row 1: K + MA/EMA + BB（全部「連續實線」）
+    # Row 1: K + MA/EMA + BB
     fig.add_trace(go.Candlestick(
         x=data.index, open=data["Open"], high=data["High"], low=data["Low"], close=data["Close"],
         name="Price", increasing_line_width=1, decreasing_line_width=1
     ), row=1, col=1)
 
-    # --- MA 選擇性顯示 ---
+    # --- MA ---
     if show_ma:
         ma_periods: Iterable[int] = show_ma if not isinstance(show_ma, bool) else (5,10,20,60,200)
         for n in ma_periods:
@@ -156,7 +156,7 @@ def plot_candlestick_with_indicators(
                     mode="lines", connectgaps=True, line=dict(width=2, dash="solid")
                 ), row=1, col=1)
 
-    # --- EMA 選擇性顯示 ---
+    # --- EMA ---
     if show_ema:
         ema_periods: Iterable[int] = show_ema if not isinstance(show_ema, bool) else (5,10,30)
         for n in ema_periods:
@@ -167,7 +167,7 @@ def plot_candlestick_with_indicators(
                     mode="lines", connectgaps=True, line=dict(width=1.8, dash="solid")
                 ), row=1, col=1)
 
-    # --- BB（選擇性顯示） ---
+    # --- BB ---
     if show_bb:
         fig.add_trace(go.Scatter(
             x=bb.index, y=bb["BB_MID"], name="BB20",
@@ -182,7 +182,7 @@ def plot_candlestick_with_indicators(
             mode="lines", connectgaps=True, line=dict(width=2, dash="solid"), opacity=0.35
         ), row=1, col=1)
 
-    # Row 2: RSI（選擇性顯示；實線 + 80/20）
+    # Row 2: RSI
     if show_rsi:
         fig.add_trace(go.Scatter(
             x=rsi.index, y=rsi, name="RSI(14)",
@@ -191,7 +191,7 @@ def plot_candlestick_with_indicators(
         fig.add_hline(y=80, line_dash="solid", row=2, col=1)
         fig.add_hline(y=20, line_dash="solid", row=2, col=1)
 
-    # Row 3: MACD 柱體 + KDJ J（J 為連續實線；皆可選）
+    # Row 3: MACD Hist + KDJ J
     if show_macd:
         fig.add_trace(go.Bar(x=macd_h.index, y=macd_h, name="MACD Hist", opacity=0.85),
                       row=3, col=1, secondary_y=False)
@@ -201,9 +201,12 @@ def plot_candlestick_with_indicators(
             mode="lines", connectgaps=True, line=dict(width=2.2, dash="solid")
         ), row=3, col=1, secondary_y=True)
 
-    # 互動：三圖共用日期線；日期線也為「實線」
-    rangebreaks = [dict(bounds=["sat", "mon"])]
-    if skip_holidays:
+    # 互動：三圖共用日期線
+    rangebreaks = []
+    if hide_weekends:
+        rangebreaks.append(dict(bounds=["sat", "mon"]))  # 週末隱藏
+    if skip_holidays and hide_weekends:
+        # 僅在隱藏週末時推斷「缺少的平日」為休市日；對 7x24 市場不做推斷
         holiday_values = _infer_holiday_gaps(data.index)
         if holiday_values:
             rangebreaks.append(dict(values=holiday_values))
@@ -222,7 +225,7 @@ def plot_candlestick_with_indicators(
     for ax in ("xaxis", "xaxis2", "xaxis3"):
         fig.layout[ax].update(
             showspikes=True, spikemode="across+toaxis+marker",
-            spikesnap="cursor", spikethickness=1.5, spikedash="solid",  # 日期線 → 實線
+            spikesnap="cursor", spikethickness=1.5, spikedash="solid",
             spikecolor="black", hoverformat="%Y/%m/%d",
         )
 
