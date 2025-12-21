@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Iterable, Sequence
+from typing import Optional, Iterable, Sequence, Union
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -15,7 +15,7 @@ PLOTLY_TV_CONFIG = {
 # ---------- robust OHLC standardizer ----------
 def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
-        return pd.DataFrame(columns=["Open", "High", "Low", "Close'])
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
     x = df.copy()
 
     # 確保 DatetimeIndex
@@ -110,10 +110,10 @@ def plot_candlestick_with_indicators(
     height: int = 820,
     uirevision_key: Optional[str] = "tv_like",
     # 指標顯示開關
-    show_ma: Sequence[int] | bool = (5,10,20,60,200),
-    show_ema: Sequence[int] | bool = (5,10,30),
+    show_ma: Union[Sequence[int], bool] = (5,10,20,60,200),
+    show_ema: Union[Sequence[int], bool] = (5,10,30),
     show_bb: bool = True,
-    show_rsi: Sequence[int] | bool = (5,10),  # 改為支援多週期，預設 5、10 日
+    show_rsi: Union[Sequence[int], bool] = (5,10),  # 預設 5、10 日
     show_macd: bool = True,
     show_kdj: bool = True,
     # 市場休市/週末處理
@@ -130,7 +130,7 @@ def plot_candlestick_with_indicators(
         has_weekend_rows = np.any((weekdays == 5) | (weekdays == 6))
         hide_weekends = not has_weekend_rows
 
-    # 計算所有可能用到的指標
+    # 計算指標
     data_ma = _ma(data)  # 內含 MA5/10/20/60/200
     data_ema = _ema(data)  # 內含 EMA5/10/30
     bb = _bb(data)
@@ -219,7 +219,6 @@ def plot_candlestick_with_indicators(
     if hide_weekends:
         rangebreaks.append(dict(bounds=["sat", "mon"]))  # 週末隱藏
     if skip_holidays and hide_weekends:
-        # 僅在隱藏週末時推斷「缺少的平日」為休市日（因為日線/股票市場）
         holiday_values = _infer_holiday_gaps(data.index)
         if holiday_values:
             rangebreaks.append(dict(values=holiday_values))
